@@ -98,11 +98,7 @@ public class RecipeMatcherResultImpl implements RecipeMatcherResult<ItemStack> {
                     MiniMessage.miniMessage().serialize(recipeResult.displayName())
             ));
         }
-        if (!(state instanceof BrewImpl.State.Seal)) {
-            itemStack.editPersistentDataContainer(pdc ->
-                    BrewAdapterAccess.applyBrewData(pdc, brew)
-            );
-        }
+        applyPersistentData(itemStack, state);
         return itemStack;
     }
 
@@ -134,11 +130,7 @@ public class RecipeMatcherResultImpl implements RecipeMatcherResult<ItemStack> {
                 .orElse(incompletePotion(brew));
         defaultRecipe.map(DefaultRecipe::result)
                 .ifPresent(result -> applyLore(itemStack, result, state));
-        if (!(state instanceof BrewImpl.State.Seal)) {
-            itemStack.editPersistentDataContainer(pdc ->
-                    BrewAdapterAccess.applyBrewData(pdc, brew)
-            );
-        }
+        applyPersistentData(itemStack, state);
         return itemStack;
     }
 
@@ -172,11 +164,7 @@ public class RecipeMatcherResultImpl implements RecipeMatcherResult<ItemStack> {
                     MiniMessage.miniMessage().serialize(recipeResult.displayName())
             ));
         }
-        if (!(state instanceof BrewImpl.State.Seal)) {
-            itemStack.editPersistentDataContainer(pdc ->
-                    BrewAdapterAccess.applyBrewData(pdc, brew)
-            );
-        }
+        applyPersistentData(itemStack, state);
         return itemStack;
     }
 
@@ -259,6 +247,16 @@ public class RecipeMatcherResultImpl implements RecipeMatcherResult<ItemStack> {
         ItemStack itemStack = recipeResult.newLorelessItem();
         applyLore(itemStack, recipeResult, state);
         return itemStack;
+    }
+
+    private void applyPersistentData(ItemStack itemStack, Brew.State state) {
+        itemStack.editPersistentDataContainer(pdc -> {
+            if (state instanceof BrewImpl.State.Seal) {
+                BrewAdapterAccess.applyBrewMeta(pdc, brew);
+            } else {
+                BrewAdapterAccess.applyBrewData(pdc, brew);
+            }
+        });
     }
 
     private void applyLore(ItemStack itemStack, RecipeResult<ItemStack> recipeResult, Brew.State state) {
