@@ -4,6 +4,7 @@ import dev.jsinco.brewery.api.brew.Brew;
 import dev.jsinco.brewery.api.brew.BrewingStep;
 import dev.jsinco.brewery.api.breweries.Distillery;
 import dev.jsinco.brewery.api.breweries.DistilleryAccess;
+import dev.jsinco.brewery.api.breweries.DistilleryProgress;
 import dev.jsinco.brewery.api.moment.Moment;
 import dev.jsinco.brewery.api.structure.MaterialTag;
 import dev.jsinco.brewery.api.structure.StructureMeta;
@@ -53,7 +54,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack, Inventory>, DistilleryAccess {
+public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack, Inventory>, DistilleryAccess, DistilleryProgress {
 
     private final PlacedBreweryStructure<BukkitDistillery> structure;
     private long startTime;
@@ -375,7 +376,8 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
         return brew.withStep(new DistillStepImpl(0));
     }
 
-    private long getTimeProcessed() {
+    @Override
+    public long getTimeProcessed() {
         return TheBrewingProject.getInstance().getTime() - startTime;
     }
 
@@ -390,7 +392,13 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
         }
     }
 
-    private long getProcessTime() {
+    @Override
+    public boolean isProcessing() {
+        return !mixture.isEmpty();
+    }
+
+    @Override
+    public long getProcessTime() {
         return getStructure().getStructure().getMeta(StructureMeta.PROCESS_TIME);
     }
 
