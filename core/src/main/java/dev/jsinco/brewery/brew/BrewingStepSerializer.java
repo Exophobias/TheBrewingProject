@@ -56,7 +56,7 @@ public class BrewingStepSerializer {
                     object.addProperty("merge_count", mergeCount);
                 }
             }
-            case DistillStepImpl(int runs, SequencedSet<UUID> brewers, int mergeCount) -> {
+            case DistillStepImpl(int runs, SequencedSet<UUID> brewers, int mergeCount, double ignored) -> {
                 object.addProperty("runs", runs);
                 if (!brewers.isEmpty()) {
                     object.add("brewers", brewersToJson(brewers));

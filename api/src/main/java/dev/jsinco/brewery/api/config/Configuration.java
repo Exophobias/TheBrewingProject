@@ -10,6 +10,8 @@ public interface Configuration {
 
   Cauldrons cauldrons();
 
+  double distillOverTolerance();
+
   interface Barrels {
 
     long agingYearTicks();
