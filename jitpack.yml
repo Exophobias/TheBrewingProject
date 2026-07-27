@@ -1,5 +1,12 @@
 jdk:
   - openjdk21
+
+# Upstream's version of this file published a module called `bukkit`, which does not exist — the
+# modules are api, core, bukkit-api and bukkit-impl — so the install step failed and the repository
+# never produced an artifact.
+#
+# Only the two modules carrying a maven-publish block are published, and they are exactly the two a
+# consumer compiles against: thebrewingproject-api and thebrewingproject-bukkit. core and
+# bukkit-impl are runtime, shipped as the server jar rather than resolved as dependencies.
 install:
-  - echo "Running a custom publish command"
-  - ./gradlew clean bukkit:publishToMavenLocal
+  - ./gradlew clean :api:publishToMavenLocal :bukkit-api:publishToMavenLocal
