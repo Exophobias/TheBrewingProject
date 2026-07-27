@@ -29,7 +29,7 @@ public record RecipeMatcherImpl(@Nullable Set<Recipe<ItemStack>> whitelist,
                                         recipe,
                                         variation,
                                         brew,
-                                        recipe.score(variation)
+                                        MetaScoreModifier.apply(brew, recipe.score(variation))
                                 ))
                 )
                 .filter(pair -> pair.score().rawScore() > 0)
