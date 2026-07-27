@@ -8,17 +8,17 @@ import dev.jsinco.brewery.api.vector.BreweryLocation;
 import dev.jsinco.brewery.api.vector.BreweryVector;
 
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class PlacedStructureRegistryImpl implements PlacedStructureRegistry {
 
-    private final Map<UUID, Map<BreweryVector, MultiblockStructure<? extends StructureHolder<?>>>> structures = new HashMap<>();
-    private final Map<StructureType<?>, Set<MultiblockStructure<?>>> typedMultiBlockStructureMap = new HashMap<>();
+    private final Map<UUID, Map<BreweryVector, MultiblockStructure<? extends StructureHolder<?>>>> structures = new ConcurrentHashMap<>();
+    private final Map<StructureType<?>, Set<MultiblockStructure<?>>> typedMultiBlockStructureMap = new ConcurrentHashMap<>();
 
     public synchronized void registerStructures(Collection<? extends MultiblockStructure<?>> multiblockStructures) {
         multiblockStructures.forEach(this::registerStructure);
@@ -28,24 +28,27 @@ public class PlacedStructureRegistryImpl implements PlacedStructureRegistry {
     public synchronized void registerStructure(MultiblockStructure<?> multiblockStructure) {
         for (BreweryLocation location : multiblockStructure.positions()) {
             UUID worldUuid = location.worldUuid();
-            structures.computeIfAbsent(worldUuid, ignored -> new HashMap<>()).put(location.toVector(), multiblockStructure);
+            structures.computeIfAbsent(worldUuid, ignored -> new ConcurrentHashMap<>()).put(location.toVector(), multiblockStructure);
         }
-        typedMultiBlockStructureMap.computeIfAbsent(multiblockStructure.getHolder().getStructureType(), ignored -> new HashSet<>()).add(multiblockStructure);
+        typedMultiBlockStructureMap.computeIfAbsent(multiblockStructure.getHolder().getStructureType(), ignored -> ConcurrentHashMap.newKeySet()).add(multiblockStructure);
     }
 
     @Override
     public synchronized void unregisterStructure(MultiblockStructure<?> structure) {
         for (BreweryLocation location : structure.positions()) {
             UUID worldUuid = location.worldUuid();
-            structures.computeIfAbsent(worldUuid, ignored -> new HashMap<>()).remove(location.toVector());
+            structures.computeIfAbsent(worldUuid, ignored -> new ConcurrentHashMap<>()).remove(location.toVector());
         }
-        typedMultiBlockStructureMap.computeIfAbsent(structure.getHolder().getStructureType(), ignored -> new HashSet<>()).remove(structure);
+        typedMultiBlockStructureMap.computeIfAbsent(structure.getHolder().getStructureType(), ignored -> ConcurrentHashMap.newKeySet()).remove(structure);
     }
 
     @Override
     public Optional<MultiblockStructure<?>> getStructure(BreweryLocation location) {
         UUID worldUuid = location.worldUuid();
-        Map<BreweryVector, MultiblockStructure<?>> placedBreweryStructureMap = structures.getOrDefault(worldUuid, new HashMap<>());
+        Map<BreweryVector, MultiblockStructure<?>> placedBreweryStructureMap = structures.get(worldUuid);
+        if (placedBreweryStructureMap == null) {
+            return Optional.empty();
+        }
         return Optional.ofNullable(placedBreweryStructureMap.get(location.toVector()));
     }
 
@@ -67,30 +70,33 @@ public class PlacedStructureRegistryImpl implements PlacedStructureRegistry {
     }
 
     public Set<MultiblockStructure<?>> getStructures(StructureType<?> structureType) {
-        return typedMultiBlockStructureMap.computeIfAbsent(structureType, ignored -> new HashSet<>());
+        return typedMultiBlockStructureMap.getOrDefault(structureType, Set.of());
     }
 
     @Override
     public Optional<StructureHolder<?>> getHolder(BreweryLocation location) {
         UUID worldUuid = location.worldUuid();
-        Map<BreweryVector, MultiblockStructure<? extends StructureHolder<?>>> placedBreweryStructureMap = structures.getOrDefault(worldUuid, new HashMap<>());
+        Map<BreweryVector, MultiblockStructure<? extends StructureHolder<?>>> placedBreweryStructureMap = structures.get(worldUuid);
+        if (placedBreweryStructureMap == null) {
+            return Optional.empty();
+        }
         return Optional.ofNullable(placedBreweryStructureMap.get(location.toVector()))
                 .map(MultiblockStructure::getHolder);
     }
 
     @Override
-    public void unloadWorld(UUID worldUuid) {
+    public synchronized void unloadWorld(UUID worldUuid) {
         Map<BreweryVector, MultiblockStructure<? extends StructureHolder<?>>> removed = structures.remove(worldUuid);
         if (removed == null) {
             return;
         }
         removed.forEach((ignored1, structure) -> {
-            typedMultiBlockStructureMap.computeIfAbsent(structure.getHolder().getStructureType(), ignored2 -> new HashSet<>()).remove(structure);
+            typedMultiBlockStructureMap.computeIfAbsent(structure.getHolder().getStructureType(), ignored2 -> ConcurrentHashMap.newKeySet()).remove(structure);
         });
     }
 
     @Override
-    public void clear() {
+    public synchronized void clear() {
         structures.clear();
     }
 }
