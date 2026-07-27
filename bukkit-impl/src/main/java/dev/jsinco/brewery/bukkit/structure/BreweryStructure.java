@@ -28,6 +28,7 @@ public class BreweryStructure {
     private final Meta meta;
     private final String schemFileName;
     private final List<StructureMatcher> matchers;
+    private final int blockCount;
 
     /**
      * Construct a schem structure where all blocks can finalize the structure
@@ -54,6 +55,7 @@ public class BreweryStructure {
         this.meta = Objects.requireNonNull(structureMeta);
         this.schemFileName = schemFileName;
         this.matchers = matchers;
+        this.blockCount = computeBlockCount(schem);
     }
 
     private static List<Vector3i> computeEntryPoints(Schematic schem) {
@@ -65,6 +67,17 @@ public class BreweryStructure {
             vector3iList.add(position);
         });
         return List.copyOf(vector3iList);
+    }
+
+    private static int computeBlockCount(Schematic schem) {
+        int[] blockCount = new int[1];
+        schem.apply(new Matrix3d(), (ignored, blockData) -> {
+            if (blockData.getMaterial().isAir()) {
+                return;
+            }
+            blockCount[0]++;
+        });
+        return blockCount[0];
     }
 
     public Optional<Location> findValidOrigin(Matrix3d transformation, Location entryPoint, StructureMatcher blockDataMatcher) {
@@ -140,6 +153,13 @@ public class BreweryStructure {
 
     public List<StructureMatcher> getStructureMatchers() {
         return this.matchers;
+    }
+
+    /**
+     * @return The amount of non-air blocks in this structure
+     */
+    public int getBlockCount() {
+        return this.blockCount;
     }
 
     public record EntryPoints(List<Vector3i> entryPoints, boolean customDefinition) {
