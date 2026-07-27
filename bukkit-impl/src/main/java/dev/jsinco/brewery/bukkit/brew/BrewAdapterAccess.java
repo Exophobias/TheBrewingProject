@@ -65,6 +65,14 @@ public class BrewAdapterAccess {
             pdc.remove(BREWERY_CIPHERED);
             pdc.set(BREWING_STEPS, ListPersistentDataType.BREWING_STEP_LIST, brew.getSteps());
         }
+        applyBrewMeta(pdc, brew);
+    }
+
+    /**
+     * Applies only the metadata, so that a sealed brew keeps metadata set by other plugins
+     * without exposing its brewing steps.
+     */
+    public static void applyBrewMeta(PersistentDataContainer pdc, Brew brew) {
         pdc.set(BREWERY_META, MetaDataPdcType.INSTANCE, brew.meta());
     }
 
