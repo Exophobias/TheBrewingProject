@@ -412,6 +412,7 @@ public class TheBrewingProject extends JavaPlugin implements TheBrewingProjectAp
                 .thenRunAsync(() -> {
                     recipeFutures.stream()
                             .map(CompletableFuture::join)
+                            .filter(Objects::nonNull)
                             .forEach(recipeRegistry::registerRecipe);
                     new AsyncRecipesLoadedEvent(recipeRegistry).callEvent();
                 });
