@@ -56,6 +56,11 @@ public class PlacedBreweryStructure<H extends StructureHolder<H>> implements Mul
         return unique;
     }
 
+    @Override
+    public Optional<String> getDefinitionName() {
+        return Optional.of(structure.getName());
+    }
+
     private BreweryLocation compileUnique() {
         List<BreweryLocation> positions = new ArrayList<>(positions());
         positions.sort(this::comparePositions);
