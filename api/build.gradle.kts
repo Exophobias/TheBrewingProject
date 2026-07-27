@@ -6,7 +6,6 @@ plugins {
 
 repositories {
     mavenCentral()
-    maven("https://repo.breweryteam.dev/mirror")
     maven("https://repo.faststats.dev/releases")
 }
 

@@ -9,7 +9,7 @@ version = project.findProperty("version")!!
 
 repositories {
     mavenCentral()
-    maven("https://repo.breweryteam.dev/mirror")
+    maven("https://repo.faststats.dev/releases")
     maven("https://maven.neoforged.net/releases")
 }
 
