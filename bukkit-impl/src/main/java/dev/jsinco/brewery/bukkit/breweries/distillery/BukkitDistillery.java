@@ -344,8 +344,11 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
 
     @Override
     public Optional<Inventory> access(@NonNull BreweryLocation breweryLocation) {
-        if (inventoryUnpopulated()
-                && (mixtureContainerLocations.contains(breweryLocation) || distillateContainerLocations.contains(breweryLocation))) {
+        checkDirty();
+        if (!mixtureContainerLocations.contains(breweryLocation) && !distillateContainerLocations.contains(breweryLocation)) {
+            return Optional.empty();
+        }
+        if (inventoryUnpopulated()) {
             mixture.updateInventoryFromBrews();
             distillate.updateInventoryFromBrews();
             TheBrewingProject.getInstance().getBreweryRegistry().registerOpened(this);
@@ -354,10 +357,7 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
         if (mixtureContainerLocations.contains(breweryLocation)) {
             return Optional.of(mixture.getInventory());
         }
-        if (distillateContainerLocations.contains(breweryLocation)) {
-            return Optional.of(distillate.getInventory());
-        }
-        return Optional.empty();
+        return Optional.of(distillate.getInventory());
     }
 
     @Override
