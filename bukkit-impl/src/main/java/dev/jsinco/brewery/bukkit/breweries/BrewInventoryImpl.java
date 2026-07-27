@@ -70,7 +70,7 @@ public class BrewInventoryImpl implements InventoryHolder, BrewInventory {
     }
 
     @Override
-    public void store(Brew brew, int position) {
+    public void store(@Nullable Brew brew, int position) {
         this.store.store(brew, position, this);
         set(brew, position);
     }
