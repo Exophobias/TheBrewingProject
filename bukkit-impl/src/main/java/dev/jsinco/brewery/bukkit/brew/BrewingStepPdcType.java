@@ -50,6 +50,7 @@ public class BrewingStepPdcType implements PersistentDataType<byte[], BrewingSte
     private static final byte[] MAGIC = new byte[]{'B', 'R', 'W', '1'};
     private static final int GCM_TAG_BITS = 128; // data authentication
     private static final int VERSION = 4;
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
     private final boolean useCipher;
 
@@ -85,7 +86,7 @@ public class BrewingStepPdcType implements PersistentDataType<byte[], BrewingSte
             }
 
             byte[] iv = new byte[12];
-            new SecureRandom().nextBytes(iv);
+            SECURE_RANDOM.nextBytes(iv);
 
             headerOut.write(MAGIC);
             headerOut.writeByte(VERSION);
