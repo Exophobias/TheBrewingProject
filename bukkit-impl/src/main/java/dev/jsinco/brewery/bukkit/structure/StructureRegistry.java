@@ -7,13 +7,22 @@ import org.bukkit.block.BlockType;
 import org.jspecify.annotations.NonNull;
 
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
 
 public class StructureRegistry {
+
+    // One shape can contain another and then both match the same blocks, so the caller picking the
+    // first match needs the bigger one offered first, in an order that does not vary between runs.
+    private static final Comparator<BreweryStructure> MOST_SPECIFIC_FIRST = Comparator
+            .<BreweryStructure>comparingInt(BreweryStructure::getBlockCount)
+            .reversed()
+            .thenComparing(BreweryStructure::getName);
 
     private final Map<String, BreweryStructure> structureNames = new HashMap<>();
     private final Map<StructureType, Map<BlockType, Set<BreweryStructure>>> structuresWithMaterials = new HashMap<>();
@@ -36,7 +45,7 @@ public class StructureRegistry {
         for (StructureMatcher structureMatcher : structure.getStructureMatchers()) {
             Set<BlockType> possibleMaterials = structureMatcher.dumpBlockTypes();
             Map<BlockType, Set<BreweryStructure>> materialStructureMap = structuresWithMaterials.computeIfAbsent(structure.getMeta(StructureMeta.TYPE), ignored -> new HashMap<>());
-            possibleMaterials.forEach(material -> materialStructureMap.computeIfAbsent(material, ignored -> new HashSet<>()).add(structure));
+            possibleMaterials.forEach(material -> materialStructureMap.computeIfAbsent(material, ignored -> new TreeSet<>(MOST_SPECIFIC_FIRST)).add(structure));
         }
     }
 
