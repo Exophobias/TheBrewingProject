@@ -278,22 +278,29 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
         }
         long processTime = getProcessTime();
         int processedBrews = (int) ((timeProcessed / processTime) * getStructure().getStructure().getMeta(StructureMeta.PROCESS_AMOUNT));
-        if (!BlockUtil.isChunkLoaded(unique)
-                || mixture.brewAmount() < processedBrews
-                || distillate.isFull()) {
+        int brewAmount = mixture.brewAmount();
+        if (brewAmount < processedBrews
+                || distillate.isFull()
+                || !BlockUtil.isChunkLoaded(unique)) {
+            return;
+        }
+        boolean playSound = timeProcessed % processTime == 0 && timeProcessed > 0;
+        long particleEffectInterval = Math.max(processTime / 4L, 10L);
+        boolean playParticles = timeProcessed % particleEffectInterval < 5 && brewAmount > processedBrews;
+        // Still dispatch while dirty, checkDirty() has to run its initial structure scan once
+        if (!dirty && !playSound && !playParticles) {
             return;
         }
         BukkitAdapter.scheduleIfLoaded(unique, TheBrewingProject.getInstance(), location -> {
             checkDirty();
-            if (timeProcessed % processTime == 0 && timeProcessed > 0) {
+            if (playSound) {
                 SoundPlayer.playSoundEffect(
                         Config.config().sounds().distilleryProcess(),
                         Sound.Source.BLOCK,
                         location.getWorld(), unique.x() + 0.5, unique.y() + 0.5, unique.z() + 0.5
                 );
             }
-            long particleEffectInterval = Math.max(processTime / 4L, 10L);
-            if (timeProcessed % particleEffectInterval < 5 && mixture.brewAmount() > processedBrews) {
+            if (playParticles) {
                 distillateContainerLocations.stream()
                         .map(BukkitAdapter::toLocation)
                         .flatMap(Optional::stream)
