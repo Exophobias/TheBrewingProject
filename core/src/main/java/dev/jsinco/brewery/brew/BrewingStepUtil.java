@@ -21,6 +21,24 @@ public class BrewingStepUtil {
         return 1 - Math.clamp(diff / expected, 0D, 1D);
     }
 
+    /**
+     * As {@link #nearbyValueScore(long, long)}, but reaching zero above the expected value at
+     * {@code expected * (1 + overTolerance)} instead of always at twice the expected value. Falling
+     * short of the expected value is scored identically, as is an {@code overTolerance} of 1.
+     *
+     * @param overTolerance The allowed overshoot as a multiple of the expected value, non-negative
+     */
+    public static double nearbyValueScore(long expected, long value, double overTolerance) {
+        if (value <= expected) {
+            return nearbyValueScore(expected, value);
+        }
+        double allowedOvershoot = expected * overTolerance;
+        if (allowedOvershoot <= 0D) {
+            return 0D;
+        }
+        return 1 - Math.clamp((value - expected) / allowedOvershoot, 0D, 1D);
+    }
+
     public static double getIngredientsScore(Map<Ingredient, Integer> target, Map<Ingredient, Integer> actual) {
         Pair<Double, Integer> actualIngredientsScore = actual.entrySet()
                 .stream()

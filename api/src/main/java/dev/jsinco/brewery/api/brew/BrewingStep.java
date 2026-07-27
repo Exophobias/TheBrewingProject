@@ -162,10 +162,28 @@ public interface BrewingStep {
     interface Distill extends AuthoredStep<Distill> {
 
         /**
+         * Value of {@link #overTolerance()} for a step that defines no tolerance of its own.
+         */
+        double INHERIT_TOLERANCE = -1D;
+
+        /**
          * @return The amount of distill runs for this step
          */
         @Range(from = 0, to = Integer.MAX_VALUE)
         int runs();
+
+        /**
+         * How far past {@link #runs()} a brew may be distilled before this step scores zero,
+         * as a multiple of the run count. A value of 1 scores zero at twice the run count, which is
+         * as far as the other steps tolerate their own value being exceeded. Under-distilling is
+         * unaffected. Only a recipe's step carries a tolerance, a brew's step always inherits.
+         *
+         * @return The over-tolerance, or {@link #INHERIT_TOLERANCE} to use
+         * {@link dev.jsinco.brewery.api.config.Configuration#distillOverTolerance()}
+         */
+        default double overTolerance() {
+            return INHERIT_TOLERANCE;
+        }
 
         /**
          * @return A new instance of this step with distill runs incremented by 1

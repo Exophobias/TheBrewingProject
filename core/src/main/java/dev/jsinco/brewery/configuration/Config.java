@@ -116,6 +116,12 @@ public class Config extends OkaeriConfig implements Configuration {
             "for example 'item.nexo' for exact match, and just 'nexo' to match with all nexo integrations"})
     private List<String> integrationBlacklist = List.of();
 
+    @CustomKey("distill-over-tolerance")
+    @Comment({"How far past a recipe's distillation runs a brew may be distilled before the step scores zero,",
+            "as a multiple of the run count. 1.0 scores zero at twice the runs, 0.0 lets any overshoot ruin it.",
+            "Under-distilling is unaffected. A recipe overrides this with 'over-tolerance' on its distill step"})
+    private double distillOverTolerance = 1.0;
+
     @Exclude
     private static Config instance;
 
@@ -233,5 +239,9 @@ public class Config extends OkaeriConfig implements Configuration {
 
     public List<String> integrationBlacklist() {
         return this.integrationBlacklist;
+    }
+
+    public double distillOverTolerance() {
+        return this.distillOverTolerance;
     }
 }

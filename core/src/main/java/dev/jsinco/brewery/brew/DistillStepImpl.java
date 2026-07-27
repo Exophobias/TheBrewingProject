@@ -3,6 +3,7 @@ package dev.jsinco.brewery.brew;
 import dev.jsinco.brewery.api.brew.BrewingStep;
 import dev.jsinco.brewery.api.brew.PartialBrewScore;
 import dev.jsinco.brewery.api.brew.ScoreType;
+import dev.jsinco.brewery.configuration.Config;
 import dev.jsinco.brewery.util.CollectionUtil;
 
 import java.util.Collections;
@@ -15,7 +16,8 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-public record DistillStepImpl(int runs, SequencedSet<UUID> brewers, int mergeCount) implements BrewingStep.Distill {
+public record DistillStepImpl(int runs, SequencedSet<UUID> brewers, int mergeCount,
+                              double overTolerance) implements BrewingStep.Distill {
 
     private static final Map<ScoreType, PartialBrewScore> BREW_STEP_MISMATCH = Stream.of(
             new PartialBrewScore(0, ScoreType.DISTILL_AMOUNT)
@@ -25,17 +27,27 @@ public record DistillStepImpl(int runs, SequencedSet<UUID> brewers, int mergeCou
         this(runs, Collections.emptySortedSet(), 1);
     }
 
+    public DistillStepImpl(int runs, double overTolerance) {
+        this(runs, Collections.emptySortedSet(), 1, overTolerance);
+    }
+
+    public DistillStepImpl(int runs, SequencedSet<UUID> brewers, int mergeCount) {
+        this(runs, brewers, mergeCount, INHERIT_TOLERANCE);
+    }
+
     @Override
     public DistillStepImpl incrementRuns() {
-        return new DistillStepImpl(this.runs + 1, this.brewers, this.mergeCount);
+        return new DistillStepImpl(this.runs + 1, this.brewers, this.mergeCount, this.overTolerance);
     }
 
     @Override
     public Map<ScoreType, PartialBrewScore> proximityScores(BrewingStep other) {
-        if (!(other instanceof DistillStepImpl(int otherRuns, SequencedSet<UUID> ignored, int ignored2))) {
+        if (!(other instanceof DistillStepImpl(
+                int otherRuns, SequencedSet<UUID> ignored, int ignored2, double ignored3
+        ))) {
             return BREW_STEP_MISMATCH;
         }
-        double distillScore = Math.sqrt(BrewingStepUtil.nearbyValueScore(this.runs, otherRuns));
+        double distillScore = Math.sqrt(BrewingStepUtil.nearbyValueScore(this.runs, otherRuns, resolvedOverTolerance()));
         return Stream.of(new PartialBrewScore(distillScore, ScoreType.DISTILL_AMOUNT))
                 .collect(Collectors.toUnmodifiableMap(PartialBrewScore::type, partial -> partial));
     }
@@ -47,10 +59,12 @@ public record DistillStepImpl(int runs, SequencedSet<UUID> brewers, int mergeCou
 
     @Override
     public Map<ScoreType, PartialBrewScore> maximumScores(BrewingStep other) {
-        if (!(other instanceof DistillStepImpl(int runs1, SequencedSet<UUID> ignored, int ignored2))) {
+        if (!(other instanceof DistillStepImpl(
+                int runs1, SequencedSet<UUID> ignored, int ignored2, double ignored3
+        ))) {
             return BREW_STEP_MISMATCH;
         }
-        double maximumDistillScore = runs1 < this.runs ? 1D : BrewingStepUtil.nearbyValueScore(this.runs, runs1);
+        double maximumDistillScore = runs1 < this.runs ? 1D : BrewingStepUtil.nearbyValueScore(this.runs, runs1, resolvedOverTolerance());
         return Stream.of(new PartialBrewScore(maximumDistillScore, ScoreType.DISTILL_AMOUNT))
                 .collect(Collectors.toUnmodifiableMap(PartialBrewScore::type, partial -> partial));
     }
@@ -79,22 +93,29 @@ public record DistillStepImpl(int runs, SequencedSet<UUID> brewers, int mergeCou
         SequencedSet<UUID> newBrewers = new LinkedHashSet<>(this.brewers);
         newBrewers.addAll(other.brewers());
         return Optional.of(
-                new DistillStepImpl(newRuns, newBrewers, other.mergeCount() + this.mergeCount)
+                new DistillStepImpl(newRuns, newBrewers, other.mergeCount() + this.mergeCount, this.overTolerance)
         );
     }
 
     @Override
     public Distill withBrewersReplaced(SequencedCollection<UUID> brewers) {
-        return new DistillStepImpl(this.runs, new LinkedHashSet<>(brewers), this.mergeCount);
+        return new DistillStepImpl(this.runs, new LinkedHashSet<>(brewers), this.mergeCount, this.overTolerance);
+    }
+
+    private double resolvedOverTolerance() {
+        return this.overTolerance >= 0D ? this.overTolerance : Config.config().distillOverTolerance();
     }
 
     @Override
     public boolean equals(Object o) {
-        if (!(o instanceof DistillStepImpl(int otherRuns, SequencedSet<UUID> otherBrewers, int otherMergeCount))) {
+        if (!(o instanceof DistillStepImpl(
+                int otherRuns, SequencedSet<UUID> otherBrewers, int otherMergeCount, double otherOverTolerance
+        ))) {
             return false;
         }
         return runs == otherRuns
                 && CollectionUtil.isEqualWithOrdering(brewers, otherBrewers)
-                && otherMergeCount == this.mergeCount;
+                && otherMergeCount == this.mergeCount
+                && Double.compare(otherOverTolerance, this.overTolerance) == 0;
     }
 }

@@ -120,7 +120,10 @@ public class RecipeReader<I> {
                         ));
             }
             case DISTILL -> CompletableFuture.completedFuture(new DistillStepImpl(
-                    (int) map.get("runs")
+                    (int) map.get("runs"),
+                    map.containsKey("over-tolerance")
+                            ? ((Number) map.get("over-tolerance")).doubleValue()
+                            : BrewingStep.Distill.INHERIT_TOLERANCE
             ));
             case AGE -> CompletableFuture.completedFuture(new AgeStepImpl(
                     parseTime(map, TimeUtil.TimeUnit.AGING_YEARS, "age-years", "time"),
@@ -170,8 +173,10 @@ public class RecipeReader<I> {
                 String cauldronType = (String) map.get("cauldron-type");
                 Preconditions.checkArgument(cauldronType == null || BreweryRegistry.CAULDRON_TYPE.containsKey(BreweryKey.parse(cauldronType)), "Expected a valid cauldron type for 'cauldron-type' in cook step!");
             }
-            case DISTILL ->
-                    Preconditions.checkArgument(map.get("runs") instanceof Integer integer && integer > 0, "Expected a positive integer value for 'runs' in distill step!");
+            case DISTILL -> {
+                Preconditions.checkArgument(map.get("runs") instanceof Integer integer && integer > 0, "Expected a positive integer value for 'runs' in distill step!");
+                Preconditions.checkArgument(!map.containsKey("over-tolerance") || (map.get("over-tolerance") instanceof Number number && number.doubleValue() >= 0), "Expected a non-negative number for 'over-tolerance' in distill step!");
+            }
             case AGE -> {
                 validTime(map, "time", "age-years", "aging-years");
                 Preconditions.checkArgument(parseTime(map, TimeUtil.TimeUnit.AGING_YEARS, "time", "age-years", "aging-years").moment() > Config.config().barrels().agingYearTicks() / 2, "Expected a time longer than half an aging year for 'age-years' in age step!");

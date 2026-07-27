@@ -53,6 +53,7 @@
 #        - craftengine:my_namespace:my_apple_juice/6 # See supported item plugins in our integrations list
 #    - type: distill
 #      runs: 256 # Distill 256 times
+#      over-tolerance: 1.0 # How far past 'runs' this brew may be distilled before scoring zero, as a multiple of 'runs'. Defaults to the config value
 #    - type: age
 #      age-years: 13 # Age for 13 years (one aging year is defined in the config)
 #      barrel-type: oak # Supports most wood types and copper barrels.
