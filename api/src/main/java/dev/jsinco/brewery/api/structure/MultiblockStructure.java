@@ -4,6 +4,7 @@ import dev.jsinco.brewery.api.breweries.StructureHolder;
 import dev.jsinco.brewery.api.vector.BreweryLocation;
 
 import java.util.List;
+import java.util.Optional;
 
 public interface MultiblockStructure<H extends StructureHolder<H>> {
 
@@ -26,4 +27,11 @@ public interface MultiblockStructure<H extends StructureHolder<H>> {
      * @return A unique position to identify this structure
      */
     BreweryLocation getUnique();
+
+    /**
+     * @return The name of the structure definition this was placed from, if it has one
+     */
+    default Optional<String> getDefinitionName() {
+        return Optional.empty();
+    }
 }
