@@ -6,7 +6,9 @@ import org.bukkit.event.HandlerList;
 import org.jspecify.annotations.NonNull;
 
 /**
- * An event that triggers whenever a brew distills. Will only trigger when an inventory is open.
+ * An event that triggers whenever a brew distills. A distillery only processes while its inventory is open, or while a
+ * hopper is pulling from one of its containers, meaning this event can trigger without a player being involved.
+ * Several of these events can be called within the same tick, one for each brew being distilled.
  */
 public class BrewDistillEvent extends BrewProcessEvent {
     private static final HandlerList HANDLERS = new HandlerList();

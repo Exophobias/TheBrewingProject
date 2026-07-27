@@ -52,7 +52,7 @@ public interface BrewInventory {
      * @param brew The brew to store
      * @param position The position to store the brew
      */
-    void store(Brew brew, int position);
+    void store(@Nullable Brew brew, int position);
 
     /**
      * @return True if inventory is empty
