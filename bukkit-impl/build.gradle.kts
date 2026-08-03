@@ -80,6 +80,12 @@ dependencies {
     compileOnly(libs.towny)
     compileOnly(libs.worldguard.bukkit) {
         exclude("com.google.code.gson", "gson")
+        // WorldGuard pins these two `strictly`, on the grounds that the server provides them. Paper
+        // 26.2 ships newer ones (guava 33.6.0-jre, fastutil 8.5.18) than WorldGuard's pins allow, so
+        // leaving them in place makes the compile classpath unresolvable. The server does provide
+        // them, exactly as WorldGuard says, so take Paper's copy and drop WorldGuard's opinion.
+        exclude("com.google.guava", "guava")
+        exclude("it.unimi.dsi", "fastutil")
     }
     compileOnly(libs.quickshop.hikari)
     compileOnly(libs.mythic)

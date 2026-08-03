@@ -15,7 +15,11 @@ repositories {
     maven("https://storehouse.okaeri.eu/repository/maven-public/")
 }
 
-java.toolchain.languageVersion.set(JavaLanguageVersion.of(21))
+// This module is not a tbp-module, but it compiles against :bukkit-impl and :core, so under
+// `-Ppaper26.2` it has to follow them onto the Java 25 toolchain or it cannot read their class files.
+java.toolchain.languageVersion.set(
+    JavaLanguageVersion.of(if (providers.gradleProperty("paper26.2").isPresent) 25 else 21)
+)
 
 dependencies {
     compileOnly("io.papermc.paper:paper-api:1.21.8-R0.1-SNAPSHOT")
