@@ -33,6 +33,17 @@ public class BarrelTypeDefinitions extends OkaeriConfig {
         File barrelTypesFile = new File("plugins/TheBrewingProject", "barrel_types.yml");
         try {
             if (!barrelTypesFile.exists()) {
+                // createNewFile() does not create parent directories, and throws
+                // "The system cannot find the path specified" when they are missing. On a live
+                // server that never shows, because Bukkit has already made the data folder. Under
+                // test the working directory is the module, plugins/TheBrewingProject/ does not
+                // exist, and this throws.
+                //
+                // It does not fail quietly. The call sits in BreweryRegistry's static initialiser,
+                // so the first failure poisons the class for the whole JVM and every later test
+                // dies on "Could not initialize class BreweryRegistry". One missing directory
+                // produced 2014 failures.
+                barrelTypesFile.getParentFile().mkdirs();
                 if (!barrelTypesFile.createNewFile()) {
                     throw new IOException("Could not create file, even though did not exist: " + barrelTypesFile);
                 }
