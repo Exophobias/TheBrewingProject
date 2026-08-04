@@ -1,6 +1,7 @@
 package dev.jsinco.brewery.configuration;
 
 import dev.jsinco.brewery.api.config.Configuration;
+import dev.jsinco.brewery.api.util.LoggingModule;
 import dev.jsinco.brewery.configuration.structure.BarrelSection;
 import dev.jsinco.brewery.configuration.structure.CauldronSection;
 import eu.okaeri.configs.ConfigManager;
@@ -18,6 +19,7 @@ import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 public class Config extends OkaeriConfig implements Configuration {
 
@@ -121,6 +123,11 @@ public class Config extends OkaeriConfig implements Configuration {
             "as a multiple of the run count. 1.0 scores zero at twice the runs, 0.0 lets any overshoot ruin it.",
             "Under-distilling is unaffected. A recipe overrides this with 'over-tolerance' on its distill step"})
     private double distillOverTolerance = 1.0;
+
+    @CustomKey("verbose-logging")
+    @Comment({"What modules should show verbose logs to the console,",
+            "can be a list with the allowed [resource_pack_parsing]"})
+    private Set<LoggingModule> verboseLogging = Set.of();
 
     @Exclude
     private static Config instance;
@@ -243,5 +250,9 @@ public class Config extends OkaeriConfig implements Configuration {
 
     public double distillOverTolerance() {
         return this.distillOverTolerance;
+    }
+
+    public Set<LoggingModule> verboseLogging() {
+        return verboseLogging;
     }
 }
