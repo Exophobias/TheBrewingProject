@@ -116,7 +116,12 @@ public class PlayerEventListener implements Listener {
 
     @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = true)
     public void onPlayerInteractStructure(PlayerInteractEvent playerInteractEvent) {
-        if (playerInteractEvent.getAction() != Action.RIGHT_CLICK_BLOCK || playerInteractEvent.getPlayer().isSneaking() || playerInteractEvent.getHand() != EquipmentSlot.HAND) {
+        if (!shouldHandleStructureInteraction(
+                playerInteractEvent.getAction(),
+                playerInteractEvent.getPlayer().isSneaking(),
+                playerInteractEvent.getHand(),
+                playerInteractEvent.useItemInHand()
+        )) {
             return;
         }
         BreweryLocation location = BukkitAdapter.toBreweryLocation(playerInteractEvent.getClickedBlock().getLocation());
@@ -137,6 +142,15 @@ public class PlayerEventListener implements Listener {
         }
         playerInteractEvent.setUseItemInHand(Event.Result.DENY);
         playerInteractEvent.setUseInteractedBlock(Event.Result.DENY);
+    }
+
+    static boolean shouldHandleStructureInteraction(Action action, boolean sneaking,
+                                                    @Nullable EquipmentSlot hand,
+                                                    Event.Result useItemInHand) {
+        return action == Action.RIGHT_CLICK_BLOCK
+                && !sneaking
+                && hand == EquipmentSlot.HAND
+                && useItemInHand != Event.Result.DENY;
     }
 
     @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = true)
