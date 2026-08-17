@@ -37,23 +37,34 @@ public class WorldEventListener implements Listener {
         loadWorld(event.getWorld());
     }
 
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onWorldUnload(WorldUnloadEvent event) {
         placedStructureRegistry.unloadWorld(event.getWorld().getUID());
+        registry.unloadWorld(event.getWorld().getUID());
     }
 
     private void loadWorld(World world) {
         try {
             database.startSession(SessionTypes.BARREL_SESSION_TYPE).findBarrels(world.getUID())
                     .thenAccept(barrels -> {
+                        if (Bukkit.getWorld(world.getUID()) != world) {
+                            return;
+                        }
                         placedStructureRegistry.registerStructures(barrels.stream().map(BukkitBarrel::getStructure).toList());
                         registry.registerInventories(barrels);
                     }).exceptionally(Logger::logAndTrackErr);
             database.startSession(SessionTypes.CAULDRON_SESSION_TYPE).findCauldrons(world.getUID())
                     .thenAccept(cauldrons -> {
+                        if (Bukkit.getWorld(world.getUID()) != world) {
+                            return;
+                        }
                         cauldrons.forEach(registry::addActiveSinglePositionStructure);
                     }).exceptionally(Logger::logAndTrackErr);
             database.startSession(SessionTypes.DISTILLERY_SESSION_TYPE).findDistilleries(world.getUID())
                     .thenAccept(distilleries -> {
+                        if (Bukkit.getWorld(world.getUID()) != world) {
+                            return;
+                        }
                         placedStructureRegistry.registerStructures(distilleries.stream().map(BukkitDistillery::getStructure).toList());
                         registry.registerInventories(distilleries);
                     }).exceptionally(Logger::logAndTrackErr);

@@ -1,6 +1,7 @@
 package dev.jsinco.brewery.bukkit.breweries;
 
 import dev.jsinco.brewery.api.breweries.InventoryAccessible;
+import dev.jsinco.brewery.api.breweries.StructureHolder;
 import dev.jsinco.brewery.api.structure.SinglePositionStructure;
 import dev.jsinco.brewery.api.structure.StructureType;
 import dev.jsinco.brewery.api.vector.BreweryLocation;
@@ -15,6 +16,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
@@ -77,6 +79,21 @@ public final class BreweryRegistry {
 
     public synchronized void unregisterInventory(InventoryAccessible<ItemStack, Inventory> inventoryAccessible) {
         inventoryAccessible.getInventories().forEach(inventories::remove);
+    }
+
+    /** Drops every in-memory reference into an unloading world without deleting durable rows. */
+    public synchronized void unloadWorld(UUID world) {
+        activeSingleBlockStructures.keySet().removeIf(location -> location.worldUuid().equals(world));
+        inventories.entrySet().removeIf(entry -> belongsToWorld(entry.getValue(), world));
+        synchronized (opened) {
+            opened.values().forEach(values ->
+                    values.removeIf(value -> belongsToWorld(value, world)));
+        }
+    }
+
+    private static boolean belongsToWorld(Object holder, UUID world) {
+        return holder instanceof StructureHolder<?> structured
+                && structured.getStructure().getUnique().worldUuid().equals(world);
     }
 
     public void clear() {
