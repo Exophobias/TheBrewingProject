@@ -1,5 +1,6 @@
 package dev.jsinco.brewery.bukkit.api.integration;
 
+import dev.jsinco.brewery.api.brew.Brew;
 import dev.jsinco.brewery.api.ingredient.Ingredient;
 import dev.jsinco.brewery.api.integration.Integration;
 import dev.jsinco.brewery.api.util.BreweryKey;
@@ -15,6 +16,21 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 public interface ItemIntegration extends Integration {
+
+    /**
+     * Gives integrations a final opportunity to decorate an item rendered from a brew.
+     *
+     * <p>This runs after TheBrewingProject has written the brew's persistent data for every
+     * rendering state, including sealed items. Implementations should mutate the supplied stack
+     * in place and must not assume that the rendered recipe used this integration as its custom
+     * item provider.</p>
+     *
+     * @param itemStack the completely rendered brew item
+     * @param brew the brew from which the item was rendered
+     * @since 3.3.2-patriam.2
+     */
+    default void decorateBrewItem(@NonNull ItemStack itemStack, @NonNull Brew brew) {
+    }
 
     /**
      * Creates an ItemStack from the given item identifier

@@ -13,6 +13,7 @@ import dev.jsinco.brewery.api.recipe.RecipeResult;
 import dev.jsinco.brewery.api.util.Pair;
 import dev.jsinco.brewery.brew.BrewImpl;
 import dev.jsinco.brewery.bukkit.TheBrewingProject;
+import dev.jsinco.brewery.bukkit.api.integration.IntegrationTypes;
 import dev.jsinco.brewery.bukkit.brew.BrewAdapterAccess;
 import dev.jsinco.brewery.bukkit.util.BukkitIngredientUtil;
 import dev.jsinco.brewery.bukkit.util.BukkitMessageUtil;
@@ -249,7 +250,7 @@ public class RecipeMatcherResultImpl implements RecipeMatcherResult<ItemStack> {
         return itemStack;
     }
 
-    private void applyPersistentData(ItemStack itemStack, Brew.State state) {
+    void applyPersistentData(ItemStack itemStack, Brew.State state) {
         itemStack.editPersistentDataContainer(pdc -> {
             if (state instanceof BrewImpl.State.Seal) {
                 BrewAdapterAccess.applyBrewMeta(pdc, brew);
@@ -257,6 +258,9 @@ public class RecipeMatcherResultImpl implements RecipeMatcherResult<ItemStack> {
                 BrewAdapterAccess.applyBrewData(pdc, brew);
             }
         });
+        TheBrewingProject.getInstance().getIntegrationManager()
+                .retrieve(IntegrationTypes.ITEM)
+                .forEach(integration -> integration.decorateBrewItem(itemStack, brew));
     }
 
     private void applyLore(ItemStack itemStack, RecipeResult<ItemStack> recipeResult, Brew.State state) {
