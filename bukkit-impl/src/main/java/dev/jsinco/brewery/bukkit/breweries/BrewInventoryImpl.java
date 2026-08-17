@@ -20,6 +20,7 @@ public class BrewInventoryImpl implements InventoryHolder, BrewInventory {
     private final Inventory inventory;
     private final Brew[] brews;
     private final BrewPersistenceHandler store;
+    private volatile boolean persistenceWritesSuspended;
 
     public BrewInventoryImpl(Component title, int size, BrewPersistenceHandler store) {
         this.inventory = Bukkit.createInventory(this, size, title);
@@ -35,6 +36,7 @@ public class BrewInventoryImpl implements InventoryHolder, BrewInventory {
 
     @Override
     public void set(@Nullable Brew brew, int position) {
+        requirePersistenceWritesAvailable();
         brews[position] = brew;
     }
 
@@ -52,6 +54,9 @@ public class BrewInventoryImpl implements InventoryHolder, BrewInventory {
 
     @Override
     public boolean updateBrewsFromInventory() {
+        if (persistenceWritesSuspended) {
+            return false;
+        }
         boolean hasUpdated = false;
         for (int i = 0; i < inventory.getSize(); i++) {
             ItemStack itemStack = inventory.getItem(i);
@@ -71,8 +76,37 @@ public class BrewInventoryImpl implements InventoryHolder, BrewInventory {
 
     @Override
     public void store(@Nullable Brew brew, int position) {
+        requirePersistenceWritesAvailable();
         this.store.store(brew, position, this);
         set(brew, position);
+    }
+
+    public synchronized void suspendPersistenceWrites() {
+        if (persistenceWritesSuspended) {
+            throw new IllegalStateException("Brew inventory already has a pending atomic operation");
+        }
+        persistenceWritesSuspended = true;
+    }
+
+    public synchronized void resumePersistenceWrites() {
+        persistenceWritesSuspended = false;
+    }
+
+    public boolean persistenceWritesSuspended() {
+        return persistenceWritesSuspended;
+    }
+
+    public void applyCommitted(@Nullable Brew brew, int position) {
+        if (!persistenceWritesSuspended) {
+            throw new IllegalStateException("Committed brews can only be applied while persistence writes are suspended");
+        }
+        brews[position] = brew;
+    }
+
+    private void requirePersistenceWritesAvailable() {
+        if (persistenceWritesSuspended) {
+            throw new IllegalStateException("Brew inventory has a pending atomic operation");
+        }
     }
 
     @Override

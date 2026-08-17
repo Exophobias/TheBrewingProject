@@ -18,9 +18,11 @@ import dev.jsinco.brewery.brew.DistillStepImpl;
 import dev.jsinco.brewery.bukkit.TheBrewingProject;
 import dev.jsinco.brewery.bukkit.api.BukkitAdapter;
 import dev.jsinco.brewery.bukkit.api.event.process.BrewDistillEvent;
+import dev.jsinco.brewery.bukkit.api.event.structure.DistilleryDestroyEvent;
 import dev.jsinco.brewery.bukkit.brew.BrewAdapterAccess;
 import dev.jsinco.brewery.bukkit.breweries.BrewInventoryImpl;
 import dev.jsinco.brewery.bukkit.database.SessionTypes;
+import dev.jsinco.brewery.bukkit.database.distillery.DistillerySession;
 import dev.jsinco.brewery.bukkit.structure.BreweryStructure;
 import dev.jsinco.brewery.bukkit.structure.PlacedBreweryStructure;
 import dev.jsinco.brewery.bukkit.util.BlockUtil;
@@ -46,11 +48,17 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Queue;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.function.BiFunction;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -64,6 +72,8 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
     private final Set<BreweryLocation> mixtureContainerLocations = new HashSet<>();
     private final Set<BreweryLocation> distillateContainerLocations = new HashSet<>();
     private long recentlyAccessed = -1L;
+    private volatile boolean atomicMovePending;
+    private volatile boolean durablyConsumed;
 
     public BukkitDistillery(@NonNull PlacedBreweryStructure<BukkitDistillery> structure) {
         this(structure, TheBrewingProject.getInstance().getTime());
@@ -79,6 +89,9 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
 
     @Override
     public CancelState open(@NonNull BreweryLocation location, Holder.@NonNull Player playerHolder) {
+        if (atomicMovePending) {
+            return new CancelState.Cancelled();
+        }
         checkDirty();
         Player player = BukkitAdapter.toPlayer(playerHolder).orElse(null);
         if (player == null) {
@@ -271,6 +284,9 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
     }
 
     public void tick() {
+        if (atomicMovePending) {
+            return;
+        }
         BreweryLocation unique = getStructure().getUnique();
         long timeProcessed = getTimeProcessed();
         if (timeProcessed < 0) {
@@ -312,6 +328,9 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
     }
 
     public void tickInventory() {
+        if (atomicMovePending) {
+            return;
+        }
         checkDirty();
         if (recentlyAccessed == -1L) {
             return;
@@ -344,7 +363,7 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
         if (timeProcessed < processTime) {
             return;
         }
-        transferItems(mixture, distillate, (int) (getStructure().getStructure().getMeta(StructureMeta.PROCESS_AMOUNT) * (timeProcessed / processTime)));
+        transferItems((int) (getStructure().getStructure().getMeta(StructureMeta.PROCESS_AMOUNT) * (timeProcessed / processTime)));
         distillate.updateInventoryFromBrews();
         mixture.updateInventoryFromBrews();
         resetStartTime();
@@ -352,6 +371,9 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
 
     @Override
     public Optional<Inventory> access(@NonNull BreweryLocation breweryLocation) {
+        if (atomicMovePending) {
+            return Optional.empty();
+        }
         checkDirty();
         if (!mixtureContainerLocations.contains(breweryLocation) && !distillateContainerLocations.contains(breweryLocation)) {
             return Optional.empty();
@@ -402,23 +424,97 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
         return getStructure().getStructure().getMeta(StructureMeta.PROCESS_TIME);
     }
 
-    private void transferItems(BrewInventoryImpl inventory1, BrewInventoryImpl inventory2, int amount) {
+    @Override
+    public int getProcessAmount() {
+        return getStructure().getStructure().getMeta(StructureMeta.PROCESS_AMOUNT);
+    }
+
+    private void transferItems(int amount) {
+        List<CompletableFuture<Boolean>> allCommitSignals = new ArrayList<>();
+        List<CompletableFuture<Boolean>> acceptedCommitSignals = new ArrayList<>();
+        boolean[] batchDeferred = {false};
+        TransferPlan plan;
+        try {
+            plan = planTransferBatch(
+                    mixture.getBrews(),
+                    distillate.getBrews(),
+                    amount,
+                    (mixtureBrew, distillateBrew) -> {
+                        CompletableFuture<Boolean> commitSignal = new CompletableFuture<>();
+                        allCommitSignals.add(commitSignal);
+                        BrewDistillEvent event = new BrewDistillEvent(
+                                this, mixtureBrew, distillateBrew, commitSignal
+                        );
+                        boolean accepted = event.callEvent();
+                        if (event.isBatchDeferred()) {
+                            batchDeferred[0] = true;
+                            return Optional.empty();
+                        }
+                        if (!accepted) {
+                            commitSignal.complete(false);
+                            return Optional.empty();
+                        }
+                        acceptedCommitSignals.add(commitSignal);
+                        return Optional.of(event.getResult());
+                    },
+                    () -> batchDeferred[0]
+            );
+        } catch (RuntimeException | Error eventFailure) {
+            completeCommitSignals(allCommitSignals, null, eventFailure);
+            throw eventFailure;
+        }
+        if (completeDeferredBatch(plan, allCommitSignals)) {
+            return;
+        }
+        List<AtomicBrewMove> moves = plan.moves();
+        if (moves.isEmpty()) {
+            return;
+        }
+        CompletableFuture<Boolean> batchCommit;
+        try {
+            batchCommit = moveBrewsAtomically(moves);
+        } catch (RuntimeException | Error startFailure) {
+            completeCommitSignals(acceptedCommitSignals, null, startFailure);
+            Logger.logAndTrackErr(startFailure);
+            return;
+        }
+        batchCommit.whenComplete((committed, failure) -> {
+            completeCommitSignals(acceptedCommitSignals, committed, failure);
+            if (failure != null) {
+                Logger.logAndTrackErr(unwrapCompletionFailure(failure));
+            } else if (!committed) {
+                Logger.logErr("Atomic distillery transfer was rejected because its inventory state changed");
+            }
+        });
+    }
+
+    static List<AtomicBrewMove> planTransfers(Brew[] mixtureBrews, Brew[] distillateBrews, int amount,
+                                               BiFunction<Brew, Brew, Optional<Brew>> processEvent) {
+        return planTransferBatch(
+                mixtureBrews, distillateBrews, amount, processEvent, () -> false
+        ).moves();
+    }
+
+    static TransferPlan planTransferBatch(Brew[] mixtureBrews, Brew[] distillateBrews, int amount,
+                                           BiFunction<Brew, Brew, Optional<Brew>> processEvent,
+                                           BooleanSupplier batchDeferred) {
         Queue<Pair<Brew, Integer>> brewsToTransfer = new LinkedList<>();
-        for (int i = 0; i < inventory1.getBrews().length; i++) {
-            if (inventory1.getBrews()[i] == null) {
+        List<AtomicBrewMove> moves = new ArrayList<>();
+        for (int i = 0; i < mixtureBrews.length; i++) {
+            if (mixtureBrews[i] == null) {
                 continue;
             }
             if (amount-- <= 0) {
                 break;
             }
-            brewsToTransfer.add(new Pair<>(inventory1.getBrews()[i], i));
+            brewsToTransfer.add(new Pair<>(mixtureBrews[i], i));
         }
-        for (int i = 0; i < inventory2.getBrews().length; i++) {
-            if (inventory2.getBrews()[i] != null) {
+        for (int i = 0; i < distillateBrews.length; i++) {
+            if (distillateBrews[i] != null) {
                 continue;
             }
             if (brewsToTransfer.isEmpty()) {
-                return;
+                break;
             }
             Pair<Brew, Integer> nextBrewToTransfer = brewsToTransfer.poll();
             Brew mixtureBrew = nextBrewToTransfer.first();
@@ -426,13 +522,377 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
                     BrewingStep.Distill.class,
                     BrewingStep.Distill::incrementRuns,
                     () -> new DistillStepImpl(1));
-            BrewDistillEvent event = new BrewDistillEvent(this, mixtureBrew, distillateBrew);
-            if (!event.callEvent()) {
-                continue;
+            int destination = i;
+            Optional<Brew> eventResult = processEvent.apply(mixtureBrew, distillateBrew);
+            if (batchDeferred.getAsBoolean()) {
+                return new TransferPlan(List.of(), true);
             }
-            inventory1.store(null, nextBrewToTransfer.second());
-            inventory2.store(event.getResult(), i);
+            eventResult.ifPresent(result ->
+                    moves.add(new AtomicBrewMove(
+                            nextBrewToTransfer.second(),
+                            destination,
+                            mixtureBrew,
+                            result
+                    ))
+            );
         }
+        return new TransferPlan(List.copyOf(moves), false);
+    }
+
+    static boolean completeDeferredBatch(TransferPlan plan,
+                                         List<? extends CompletableFuture<Boolean>> commitSignals) {
+        if (!plan.deferred()) {
+            return false;
+        }
+        completeCommitSignals(commitSignals, false, null);
+        return true;
+    }
+
+    record TransferPlan(List<AtomicBrewMove> moves, boolean deferred) {
+    }
+
+    static void completeCommitSignals(List<? extends CompletableFuture<Boolean>> signals,
+                                      Boolean committed, Throwable failure) {
+        if (failure != null) {
+            Throwable cause = unwrapCompletionFailure(failure);
+            signals.forEach(signal -> signal.completeExceptionally(cause));
+            return;
+        }
+        boolean didCommit = Boolean.TRUE.equals(committed);
+        signals.forEach(signal -> signal.complete(didCommit));
+    }
+
+    @Override
+    public CompletableFuture<Boolean> moveBrewsAtomically(@NonNull List<AtomicBrewMove> requestedMoves) {
+        List<AtomicBrewMove> moves = List.copyOf(requestedMoves);
+        if (moves.isEmpty()) {
+            return CompletableFuture.completedFuture(false);
+        }
+
+        // BrewInventory is the durable model. The backing Bukkit inventories are deliberately not
+        // read here: TBP clears them when a distillery is unpopulated, and treating that empty GUI
+        // as authoritative would erase dormant brews. The caller's expected source plus the
+        // database precondition protect this hand-off instead.
+        if (!reserveAtomicMove(moves)) {
+            return CompletableFuture.completedFuture(false);
+        }
+
+        CompletableFuture<Boolean> persistence;
+        try {
+            persistence = TheBrewingProject.getInstance().getDatabase()
+                    .startSession(SessionTypes.DISTILLERY_SESSION_TYPE)
+                    .moveBrewsAtomically(structure.getUnique(), moves);
+        } catch (RuntimeException | PersistenceException failure) {
+            releaseAtomicMove();
+            return CompletableFuture.failedFuture(failure);
+        }
+
+        return publishAtomicMutation(persistence, () -> applyCommittedMoves(moves));
+    }
+
+    @Override
+    public CompletableFuture<Boolean> removeMixtureBrewsAtomically(
+            @NonNull List<AtomicBrewRemoval> requestedRemovals) {
+        List<AtomicBrewRemoval> removals = List.copyOf(requestedRemovals);
+        if (removals.isEmpty()) {
+            return CompletableFuture.completedFuture(false);
+        }
+
+        if (!reserveAtomicRemoval(removals)) {
+            return CompletableFuture.completedFuture(false);
+        }
+
+        CompletableFuture<Boolean> persistence;
+        try {
+            persistence = TheBrewingProject.getInstance().getDatabase()
+                    .startSession(SessionTypes.DISTILLERY_SESSION_TYPE)
+                    .removeMixtureBrewsAtomically(structure.getUnique(), removals);
+        } catch (RuntimeException | PersistenceException failure) {
+            releaseAtomicMove();
+            return CompletableFuture.failedFuture(failure);
+        }
+
+        return publishAtomicMutation(persistence, () -> applyCommittedRemovals(removals));
+    }
+
+    @Override
+    public CompletableFuture<Boolean> consumeWithoutDropsAtomically(
+            @NonNull BreweryLocation requestedLocation) {
+        Objects.requireNonNull(requestedLocation, "requestedLocation");
+        if (!Bukkit.isOwnedByCurrentRegion(structure.getWorldOrigin())) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "Atomic distillery consumption must start on the owning region"
+            ));
+        }
+        if (atomicMovePending || durablyConsumed || !ownsLiveLocation(requestedLocation)) {
+            return CompletableFuture.completedFuture(false);
+        }
+
+        CompletableFuture<Boolean> destroyCommitSignal = new CompletableFuture<>();
+        try {
+            DistilleryDestroyEvent event = new DistilleryDestroyEvent(
+                    new CancelState.Allowed(),
+                    this,
+                    null,
+                    BukkitAdapter.toLocation(requestedLocation).orElse(structure.getWorldOrigin()),
+                    calculateDestroyDrops(),
+                    destroyCommitSignal
+            );
+            event.callEvent();
+            if (event.isCancelled() || !reserveAtomicConsumption(requestedLocation)) {
+                destroyCommitSignal.complete(false);
+                return CompletableFuture.completedFuture(false);
+            }
+        } catch (RuntimeException failure) {
+            destroyCommitSignal.completeExceptionally(failure);
+            return CompletableFuture.failedFuture(failure);
+        }
+
+        CompletableFuture<Boolean> persistence;
+        try {
+            persistence = TheBrewingProject.getInstance().getDatabase()
+                    .startSession(SessionTypes.DISTILLERY_SESSION_TYPE)
+                    .consumeDistilleryAtomically(structure.getUnique());
+        } catch (RuntimeException | PersistenceException failure) {
+            releaseAtomicMove();
+            destroyCommitSignal.completeExceptionally(failure);
+            return CompletableFuture.failedFuture(failure);
+        }
+
+        // A successfully consumed holder remains permanently reserved. Stale references must not
+        // be able to write its old arrays back after its durable row and registries are gone.
+        CompletableFuture<Boolean> result = publishAtomicMutation(
+                persistence,
+                () -> applyCommittedConsumption(requestedLocation),
+                this::runLocally,
+                () -> {
+                    if (!durablyConsumed) {
+                        releaseAtomicMove();
+                    }
+                }
+        );
+        result.whenComplete((committed, failure) -> {
+            Throwable cause = unwrapCompletionFailure(failure);
+            if (cause != null) {
+                destroyCommitSignal.completeExceptionally(cause);
+            } else {
+                destroyCommitSignal.complete(Boolean.TRUE.equals(committed));
+            }
+        });
+        return result;
+    }
+
+    private CompletableFuture<Boolean> publishAtomicMutation(CompletableFuture<Boolean> persistence,
+                                                              Runnable applyCommitted) {
+        return publishAtomicMutation(
+                persistence, applyCommitted, this::runLocally, this::releaseAtomicMove
+        );
+    }
+
+    static CompletableFuture<Boolean> publishAtomicMutation(
+            CompletableFuture<Boolean> persistence,
+            Runnable applyCommitted,
+            Function<Runnable, CompletableFuture<Void>> localRunner,
+            Runnable releaseReservation) {
+        CompletableFuture<Boolean> result = new CompletableFuture<>();
+        persistence.whenComplete((committed, persistenceFailure) -> {
+            Throwable cause = unwrapCompletionFailure(persistenceFailure);
+            if (cause != null && !rollbackConfirmed(cause)) {
+                // An ambiguous durable outcome must stay quarantined. Releasing the old in-memory
+                // side could duplicate a move that actually committed. Restart reloads the
+                // authoritative database state.
+                result.completeExceptionally(cause);
+                return;
+            }
+
+            CompletableFuture<Void> publication;
+            try {
+                publication = localRunner.apply(() -> {
+                    if (cause == null && Boolean.TRUE.equals(committed)) {
+                        // A committed database transaction is authoritative. If publication
+                        // throws after changing only part of the live state, retaining the
+                        // reservation is the only safe response; restart reloads the whole state.
+                        applyCommitted.run();
+                    }
+                    releaseReservation.run();
+                });
+            } catch (RuntimeException schedulingFailure) {
+                if (cause != null || !Boolean.TRUE.equals(committed)) {
+                    // The durable state is known to be unchanged, so releasing the reservation
+                    // does not need region-owned inventory access.
+                    releaseReservation.run();
+                }
+                result.completeExceptionally(schedulingFailure);
+                return;
+            }
+
+            publication.whenComplete((ignored, publicationFailure) -> {
+                if (publicationFailure != null) {
+                    result.completeExceptionally(unwrapCompletionFailure(publicationFailure));
+                } else if (cause != null) {
+                    result.completeExceptionally(cause);
+                } else {
+                    result.complete(Boolean.TRUE.equals(committed));
+                }
+            });
+        });
+        return result;
+    }
+
+    private synchronized boolean reserveAtomicMove(List<AtomicBrewMove> moves) {
+        if (atomicMovePending || !matchesLiveState(moves)) {
+            return false;
+        }
+        return suspendForAtomicMutation();
+    }
+
+    private synchronized boolean reserveAtomicRemoval(List<AtomicBrewRemoval> removals) {
+        if (atomicMovePending || !matchesLiveRemovalState(removals)) {
+            return false;
+        }
+        return suspendForAtomicMutation();
+    }
+
+    private synchronized boolean reserveAtomicConsumption(BreweryLocation requestedLocation) {
+        if (atomicMovePending || durablyConsumed || !ownsLiveLocation(requestedLocation)) {
+            return false;
+        }
+        return suspendForAtomicMutation();
+    }
+
+    private boolean ownsLiveLocation(BreweryLocation requestedLocation) {
+        return TheBrewingProject.getInstance().getPlacedStructureRegistry()
+                .getHolder(requestedLocation)
+                .filter(holder -> holder == this)
+                .isPresent();
+    }
+
+    private boolean suspendForAtomicMutation() {
+        atomicMovePending = true;
+        try {
+            mixture.suspendPersistenceWrites();
+            distillate.suspendPersistenceWrites();
+            return true;
+        } catch (RuntimeException failure) {
+            if (mixture.persistenceWritesSuspended()) {
+                mixture.resumePersistenceWrites();
+            }
+            if (distillate.persistenceWritesSuspended()) {
+                distillate.resumePersistenceWrites();
+            }
+            atomicMovePending = false;
+            throw failure;
+        }
+    }
+
+    private boolean matchesLiveState(List<AtomicBrewMove> moves) {
+        Brew[] mixtureBrews = mixture.getBrews();
+        Brew[] distillateBrews = distillate.getBrews();
+        Set<Integer> mixturePositions = new HashSet<>();
+        Set<Integer> distillatePositions = new HashSet<>();
+        for (AtomicBrewMove move : moves) {
+            if (move.mixturePosition() >= mixtureBrews.length
+                    || move.distillatePosition() >= distillateBrews.length
+                    || !mixturePositions.add(move.mixturePosition())
+                    || !distillatePositions.add(move.distillatePosition())
+                    || !sameBrew(mixtureBrews[move.mixturePosition()], move.expectedMixture())
+                    || distillateBrews[move.distillatePosition()] != null) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean matchesLiveRemovalState(List<AtomicBrewRemoval> removals) {
+        Brew[] mixtureBrews = mixture.getBrews();
+        Set<Integer> mixturePositions = new HashSet<>();
+        for (AtomicBrewRemoval removal : removals) {
+            if (removal.mixturePosition() >= mixtureBrews.length
+                    || !mixturePositions.add(removal.mixturePosition())
+                    || !sameBrew(mixtureBrews[removal.mixturePosition()], removal.expectedMixture())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean sameBrew(Brew first, Brew second) {
+        return first != null && second != null
+                && Objects.equals(first.getSteps(), second.getSteps())
+                && Objects.equals(first.meta(), second.meta());
+    }
+
+    private void applyCommittedMoves(List<AtomicBrewMove> moves) {
+        for (AtomicBrewMove move : moves) {
+            mixture.applyCommitted(null, move.mixturePosition());
+            distillate.applyCommitted(move.distillate(), move.distillatePosition());
+        }
+        mixture.updateInventoryFromBrews();
+        distillate.updateInventoryFromBrews();
+    }
+
+    private void applyCommittedRemovals(List<AtomicBrewRemoval> removals) {
+        for (AtomicBrewRemoval removal : removals) {
+            mixture.applyCommitted(null, removal.mixturePosition());
+        }
+        mixture.updateInventoryFromBrews();
+    }
+
+    private void applyCommittedConsumption(BreweryLocation requestedLocation) {
+        Object currentHolder = TheBrewingProject.getInstance().getPlacedStructureRegistry()
+                .getHolder(requestedLocation)
+                .orElse(null);
+        if (currentHolder != null && currentHolder != this) {
+            // A reload may replace the live holder while database work is queued. Never let an
+            // old completion unregister or clear the replacement; keep this operation
+            // quarantined until authoritative reload instead.
+            throw new IllegalStateException(
+                    "Distillery holder changed before committed consumption publication"
+            );
+        }
+
+        destroyWithoutDrops();
+        TheBrewingProject.getInstance().getBreweryRegistry().unregisterOpened(this);
+        TheBrewingProject.getInstance().getBreweryRegistry().unregisterInventory(this);
+        TheBrewingProject.getInstance().getPlacedStructureRegistry().unregisterStructure(structure);
+        structure.positions().stream()
+                .filter(position -> !position.equals(requestedLocation))
+                .map(BukkitAdapter::toLocation)
+                .flatMap(Optional::stream)
+                .forEach(location -> location.getBlock().setType(Material.AIR, false));
+        durablyConsumed = true;
+    }
+
+    private synchronized void releaseAtomicMove() {
+        if (mixture.persistenceWritesSuspended()) {
+            mixture.resumePersistenceWrites();
+        }
+        if (distillate.persistenceWritesSuspended()) {
+            distillate.resumePersistenceWrites();
+        }
+        atomicMovePending = false;
+    }
+
+    private static boolean rollbackConfirmed(Throwable failure) {
+        for (Throwable current = failure; current != null; current = current.getCause()) {
+            if (current instanceof DistillerySession.AtomicMovePersistenceException atomicFailure) {
+                return atomicFailure.rollbackConfirmed();
+            }
+        }
+        return false;
+    }
+
+    private static Throwable unwrapCompletionFailure(Throwable failure) {
+        Throwable current = failure;
+        while (current instanceof CompletionException && current.getCause() != null) {
+            current = current.getCause();
+        }
+        return current;
+    }
+
+    @Override
+    public boolean isAtomicMovePending() {
+        return atomicMovePending;
     }
 
     /**
@@ -459,6 +919,9 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
 
     @Override
     public void destroy(BreweryLocation breweryLocation) {
+        if (atomicMovePending) {
+            return;
+        }
         calculateDestroyDrops();
         List<Brew> drops = new ArrayList<>();
         drops.addAll(distillate.destroy());
@@ -484,11 +947,33 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
 
     @Override
     public CompletableFuture<Void> runLocally(Runnable action) {
+        return runLocally(
+                Bukkit.isOwnedByCurrentRegion(structure.getWorldOrigin()),
+                action,
+                scheduledAction -> Bukkit.getRegionScheduler().run(
+                        TheBrewingProject.getInstance(),
+                        structure.getWorldOrigin(),
+                        ignored -> scheduledAction.run()
+                )
+        );
+    }
+
+    static CompletableFuture<Void> runLocally(boolean ownedByCurrentRegion, Runnable action,
+                                              Consumer<Runnable> scheduler) {
         CompletableFuture<Void> completableFuture = new CompletableFuture<>();
-        Bukkit.getRegionScheduler().run(TheBrewingProject.getInstance(), structure.getWorldOrigin(), ignored -> {
-            action.run();
-            completableFuture.complete(null);
-        });
+        Runnable completedAction = () -> {
+            try {
+                action.run();
+                completableFuture.complete(null);
+            } catch (Throwable failure) {
+                completableFuture.completeExceptionally(failure);
+            }
+        };
+        if (ownedByCurrentRegion) {
+            completedAction.run();
+            return completableFuture;
+        }
+        scheduler.accept(completedAction);
         return completableFuture;
     }
 }

@@ -330,6 +330,14 @@ public class BlockEventListener implements Listener {
             });
         }
 
+        // DistilleryDestroyEvent is intentionally mutable, so a later listener can undo the
+        // initial cancellation used for an atomic reservation. Authorization output is not an
+        // ownership token: recheck the holder immediately before any registry or inventory
+        // mutation and keep the whole multi-block change atomic when one is reserved.
+        if (containsPendingAtomicDistillery(holdersToDrops.keySet())) {
+            return false;
+        }
+
         singlePositionStructures.forEach(ListenerUtil::removeActiveSinglePositionStructure);
         multiblockStructures.forEach(placedStructureRegistry::unregisterStructure);
         Location location = locations.getFirst();
@@ -343,6 +351,17 @@ public class BlockEventListener implements Listener {
             LocationUtil.dropBrews(location, drops);
         }
         return true;
+    }
+
+    static boolean containsPendingAtomicDistillery(
+            Iterable<? extends StructureHolder<?>> holders) {
+        for (StructureHolder<?> holder : holders) {
+            if (holder instanceof BukkitDistillery distillery
+                    && distillery.isAtomicMovePending()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -389,10 +408,13 @@ public class BlockEventListener implements Listener {
                 yield new Result(event.getCancelState(), event.getDrops());
             }
             case BukkitDistillery distillery -> {
+                CancelState initialState = distillery.isAtomicMovePending()
+                        ? new CancelState.Cancelled()
+                        : player == null || player.hasPermission("brewery.distillery.access")
+                        ? new CancelState.Allowed()
+                        : new CancelState.PermissionDenied(Component.translatable("tbp.distillery.access-denied"));
                 DistilleryDestroyEvent event = new DistilleryDestroyEvent(
-                        player == null || player.hasPermission("brewery.distillery.access") ?
-                                new CancelState.Allowed() :
-                                new CancelState.PermissionDenied(Component.translatable("tbp.distillery.access-denied")),
+                        initialState,
                         distillery,
                         player,
                         location,

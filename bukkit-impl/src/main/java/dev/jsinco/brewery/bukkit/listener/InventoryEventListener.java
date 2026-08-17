@@ -75,6 +75,10 @@ public class InventoryEventListener implements Listener {
         if (inventoryAccessible == null) {
             return;
         }
+        if (atomicMovePending(inventoryAccessible)) {
+            event.setCancelled(true);
+            return;
+        }
         InventoryAction action = event.getAction();
         if (action == InventoryAction.NOTHING) {
             return;
@@ -357,6 +361,10 @@ public class InventoryEventListener implements Listener {
         if (inventoryAccessible == null) {
             return;
         }
+        if (atomicMovePending(inventoryAccessible)) {
+            dragEvent.setCancelled(true);
+            return;
+        }
         InventoryView inventoryView = dragEvent.getView();
         List<? extends ItemTransactionEvent<?>> transactionEvents = dragEvent.getNewItems()
                 .entrySet()
@@ -394,6 +402,11 @@ public class InventoryEventListener implements Listener {
     public void onInventoryMoveItem(InventoryMoveItemEvent event) {
         Optional<InventoryAccessible<ItemStack, Inventory>> source = Optional.ofNullable(registry.getFromInventory(event.getSource()));
         Optional<InventoryAccessible<ItemStack, Inventory>> destination = Optional.ofNullable(registry.getFromInventory(event.getDestination()));
+        if (source.filter(InventoryEventListener::atomicMovePending).isPresent()
+                || destination.filter(InventoryEventListener::atomicMovePending).isPresent()) {
+            event.setCancelled(true);
+            return;
+        }
         Optional<InventoryAccessible<ItemStack, Inventory>> both = destination.or(() -> source);
         if (!Config.config().automation()) {
             both.ifPresent(ignored -> event.setCancelled(true));
@@ -425,8 +438,17 @@ public class InventoryEventListener implements Listener {
 
     @EventHandler(ignoreCancelled = true)
     public void onInventoryPickupItem(InventoryPickupItemEvent event) {
+        InventoryAccessible<ItemStack, Inventory> inventoryAccessible = registry.getFromInventory(event.getInventory());
+        if (inventoryAccessible != null && atomicMovePending(inventoryAccessible)) {
+            event.setCancelled(true);
+            return;
+        }
         if (event.getItem().getPersistentDataContainer().has(PukeNamedExecutable.PUKE_ITEM)) {
             event.setCancelled(true);
         }
+    }
+
+    private static boolean atomicMovePending(InventoryAccessible<ItemStack, Inventory> inventoryAccessible) {
+        return inventoryAccessible instanceof BukkitDistillery distillery && distillery.isAtomicMovePending();
     }
 }

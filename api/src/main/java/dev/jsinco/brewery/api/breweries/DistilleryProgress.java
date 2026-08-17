@@ -22,6 +22,13 @@ public interface DistilleryProgress {
     long getProcessTime();
 
     /**
+     * @return The maximum number of brews processed by one completed distillation cycle
+     */
+    default int getProcessAmount() {
+        return 1;
+    }
+
+    /**
      * @return True if the mixture inventory has brews to distill
      */
     boolean isProcessing();
