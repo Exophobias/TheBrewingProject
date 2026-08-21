@@ -6,12 +6,27 @@ import dev.jsinco.brewery.api.util.CancelState;
 import dev.jsinco.brewery.api.util.Holder;
 import dev.jsinco.brewery.api.vector.BreweryLocation;
 import org.jspecify.annotations.NonNull;
+import org.jspecify.annotations.Nullable;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 public interface DistilleryAccess extends SelfSchedulingBrewery {
+
+    /** A pre-authorized exact-holder reservation for later durable no-drop consumption. */
+    interface AtomicConsumption {
+
+        /** True while this reservation still owns the exact live distillery. */
+        boolean isValid();
+
+        /** Starts the durable delete after the initiating world action has been accepted. */
+        CompletableFuture<Boolean> commit();
+
+        /** Releases the reservation without consuming the distillery. */
+        void abort();
+    }
     /**
      * Open this distillery inventory for the player with the specified UUID
      *
@@ -62,12 +77,50 @@ public interface DistilleryAccess extends SelfSchedulingBrewery {
     }
 
     /**
+     * Whether acknowledged atomic consumption leaves every world block for the caller.
+     * <p>
+     * This capability is part of the no-drop contract: the lifecycle owner can authorize and
+     * durably delete its own rows, but it cannot know which physical blocks an initiating
+     * explosion and its protection listeners allowed to be destroyed. Implementations returning
+     * {@code true} promise that {@link #consumeWithoutDropsAtomically(BreweryLocation)} removes no
+     * world geometry. The default keeps older implementations fail-closed for callers that need
+     * this stronger contract.
+     *
+     * @return true when the caller retains exclusive control of physical block removal
+     */
+    default boolean atomicConsumptionPreservesWorldGeometry() {
+        return false;
+    }
+
+    /**
+     * Runs destruction permission/event authorization and reserves this exact live holder before
+     * an external caller creates an irreversible world action.
+     * <p>
+     * A non-empty result owns the distillery until exactly one of
+     * {@link AtomicConsumption#commit()} or {@link AtomicConsumption#abort()} is called. The
+     * reservation prevents ticking, access, extraction, ordinary destruction, or another atomic
+     * mutation in the meantime. Implementations must leave all world geometry untouched.
+     *
+     * @param location exact structure component selected by the caller
+     * @param player initiating player, or null for fire/explosion/automation
+     * @return an authorized reservation, or empty when permission, an event, ownership, or a busy
+     *         holder refuses the proposal
+     */
+    default Optional<AtomicConsumption> prepareAtomicConsumption(
+            @NonNull BreweryLocation location,
+            Holder.@Nullable Player player) {
+        return Optional.empty();
+    }
+
+    /**
      * Atomically consumes this entire distillery without dropping its brews.
      * <p>
      * Implementations first run their normal destruction authorization event, then reserve the
      * live holder, remove every persisted brew and the structure row in one transaction, and only
-     * after commit close viewers and remove runtime registrations. The representative world block
-     * is deliberately left for the caller to remove after this future completes {@code true}.
+     * after commit close viewers and remove runtime registrations. Implementations advertising
+     * {@link #atomicConsumptionPreservesWorldGeometry()} leave <em>all</em> world blocks intact;
+     * the caller must remove only the positions authorized by its own initiating event and
+     * protection checks after this future completes {@code true}.
      * <p>
      * This method must be called from the distillery's owning region. {@code false} means the
      * request was cancelled, the holder was busy or no longer owns {@code location}, or the

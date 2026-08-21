@@ -154,6 +154,7 @@ public class TheBrewingProject extends JavaPlugin implements TheBrewingProjectAp
     private BrewManager<ItemStack> brewManager = new BukkitBrewManager();
     private final IntegrationManagerImpl integrationManager = new IntegrationManagerImpl();
     private final ActiveEventsRegistry activeEventsRegistry = new ActiveEventsRegistry();
+    private final AtomicMutationGate atomicMutationGate = new AtomicMutationGate();
     private PlayerWalkListener playerWalkListener;
     private ModifierManager modifierManager = new ModifierManagerImpl();
     private BreweryTranslator translator;
@@ -238,6 +239,28 @@ public class TheBrewingProject extends JavaPlugin implements TheBrewingProjectAp
     }
 
     public void reload() {
+        tryReload();
+    }
+
+    /**
+     * Reloads only when no atomic brewery mutation owns a live holder.
+     *
+     * @return true when the reload ran
+     */
+    public boolean tryReload() {
+        if (!atomicMutationGate.beginRefresh(this::hasPendingAtomicDistilleryMutation)) {
+            Logger.logErr("The Brewing Project reload was refused because an atomic distillery mutation is pending");
+            return false;
+        }
+        try {
+            reloadNow();
+            return true;
+        } finally {
+            atomicMutationGate.endRefresh();
+        }
+    }
+
+    private void reloadNow() {
         Migrations.migrateAllConfigFiles(this.getDataFolder());
         saveResources();
         closeDatabase();
@@ -260,12 +283,9 @@ public class TheBrewingProject extends JavaPlugin implements TheBrewingProjectAp
         this.drunkEventExecutor.clear();
         this.customDrunkEventRegistry = EventSection.events().customEvents();
         saveResources();
-        this.database = new SqlDatabase(DatabaseDriver.SQLITE);
-        try {
-            database.init(this.getDataFolder());
-        } catch (IOException | SQLException e) {
-            throw new RuntimeException(e); // Hard exit if any issues here
-        }
+        // Registered listeners retain this database instance. Replacing it here would split
+        // ordered writes and reads across the old listener executor and a new atomic executor.
+        // closeDatabase() already flushes the shared instance before registries are rebuilt.
         this.drunksManager.reset(EventSection.events().enabledRandomEvents().stream().map(EventData::deserialize).collect(Collectors.toSet()));
         worldEventListener.init();
         recipeRegistry.clear();
@@ -293,6 +313,14 @@ public class TheBrewingProject extends JavaPlugin implements TheBrewingProjectAp
         loadDrunkenReplacements();
         loadTimeFormats();
         new TBPReloadEvent().callEvent();
+    }
+
+    private boolean hasPendingAtomicDistilleryMutation() {
+        return placedStructureRegistry.getStructures(StructureType.DISTILLERY).stream()
+                .map(MultiblockStructure::getHolder)
+                .filter(BukkitDistillery.class::isInstance)
+                .map(BukkitDistillery.class::cast)
+                .anyMatch(BukkitDistillery::isAtomicMovePending);
     }
 
     private void loadDrunkenReplacements() {
@@ -480,8 +508,8 @@ public class TheBrewingProject extends JavaPlugin implements TheBrewingProjectAp
                 .forEach(Tickable::tick);
         placedStructureRegistry.getStructures(StructureType.DISTILLERY).stream()
                 .map(MultiblockStructure::getHolder)
-                .map(Tickable.class::cast)
-                .forEach(Tickable::tick);
+                .map(BukkitDistillery.class::cast)
+                .forEach(distillery -> distillery.runLocally(distillery::tick));
         breweryRegistry.iterate(StructureType.BARREL, barrel ->
                 barrel.runLocally(((BukkitBarrel) barrel)::tickInventory)
         );
@@ -588,6 +616,10 @@ public class TheBrewingProject extends JavaPlugin implements TheBrewingProjectAp
 
     public DrunkEventExecutor getDrunkEventExecutor() {
         return this.drunkEventExecutor;
+    }
+
+    public AtomicMutationGate getAtomicMutationGate() {
+        return atomicMutationGate;
     }
 
     public long getTime() {

@@ -43,6 +43,7 @@ import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.joml.Vector3i;
 import org.jspecify.annotations.NonNull;
+import org.jspecify.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -55,6 +56,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiFunction;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
@@ -73,6 +75,7 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
     private final Set<BreweryLocation> distillateContainerLocations = new HashSet<>();
     private long recentlyAccessed = -1L;
     private volatile boolean atomicMovePending;
+    private volatile int deferredInventoryPublications;
     private volatile boolean durablyConsumed;
 
     public BukkitDistillery(@NonNull PlacedBreweryStructure<BukkitDistillery> structure) {
@@ -89,7 +92,7 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
 
     @Override
     public CancelState open(@NonNull BreweryLocation location, Holder.@NonNull Player playerHolder) {
-        if (atomicMovePending) {
+        if (isAtomicMovePending()) {
             return new CancelState.Cancelled();
         }
         checkDirty();
@@ -127,6 +130,9 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
 
     @Override
     public void close(boolean silent) {
+        if (isAtomicMovePending()) {
+            return;
+        }
         Stream.of(mixture, distillate).forEach(inventory -> {
                     inventory.updateBrewsFromInventory();
                     inventory.getInventory().clear();
@@ -284,7 +290,7 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
     }
 
     public void tick() {
-        if (atomicMovePending) {
+        if (isAtomicMovePending() || !ownsLiveLocation(structure.getUnique())) {
             return;
         }
         BreweryLocation unique = getStructure().getUnique();
@@ -309,6 +315,9 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
             return;
         }
         BukkitAdapter.scheduleIfLoaded(unique, TheBrewingProject.getInstance(), location -> {
+            if (isAtomicMovePending() || !ownsLiveLocation(unique)) {
+                return;
+            }
             checkDirty();
             if (playSound) {
                 SoundPlayer.playSoundEffect(
@@ -328,7 +337,7 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
     }
 
     public void tickInventory() {
-        if (atomicMovePending) {
+        if (isAtomicMovePending() || !ownsLiveLocation(structure.getUnique())) {
             return;
         }
         checkDirty();
@@ -363,7 +372,12 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
         if (timeProcessed < processTime) {
             return;
         }
-        transferItems((int) (getStructure().getStructure().getMeta(StructureMeta.PROCESS_AMOUNT) * (timeProcessed / processTime)));
+        if (transferItems((int) (getStructure().getStructure().getMeta(StructureMeta.PROCESS_AMOUNT)
+                * (timeProcessed / processTime)))) {
+            // Once a batch is deferred or starts its atomic receipt, no GUI or timer publication
+            // may cross that reservation. A true durable publication performs both exactly once.
+            return;
+        }
         distillate.updateInventoryFromBrews();
         mixture.updateInventoryFromBrews();
         resetStartTime();
@@ -371,7 +385,7 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
 
     @Override
     public Optional<Inventory> access(@NonNull BreweryLocation breweryLocation) {
-        if (atomicMovePending) {
+        if (isAtomicMovePending()) {
             return Optional.empty();
         }
         checkDirty();
@@ -429,7 +443,7 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
         return getStructure().getStructure().getMeta(StructureMeta.PROCESS_AMOUNT);
     }
 
-    private void transferItems(int amount) {
+    private boolean transferItems(int amount) {
         List<CompletableFuture<Boolean>> allCommitSignals = new ArrayList<>();
         List<CompletableFuture<Boolean>> acceptedCommitSignals = new ArrayList<>();
         boolean[] batchDeferred = {false};
@@ -464,11 +478,11 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
             throw eventFailure;
         }
         if (completeDeferredBatch(plan, allCommitSignals)) {
-            return;
+            return true;
         }
         List<AtomicBrewMove> moves = plan.moves();
         if (moves.isEmpty()) {
-            return;
+            return false;
         }
         CompletableFuture<Boolean> batchCommit;
         try {
@@ -476,7 +490,7 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
         } catch (RuntimeException | Error startFailure) {
             completeCommitSignals(acceptedCommitSignals, null, startFailure);
             Logger.logAndTrackErr(startFailure);
-            return;
+            return true;
         }
         batchCommit.whenComplete((committed, failure) -> {
             completeCommitSignals(acceptedCommitSignals, committed, failure);
@@ -486,6 +500,7 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
                 Logger.logErr("Atomic distillery transfer was rejected because its inventory state changed");
             }
         });
+        return true;
     }
 
     static List<AtomicBrewMove> planTransfers(Brew[] mixtureBrews, Brew[] distillateBrews, int amount,
@@ -577,17 +592,18 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
             return CompletableFuture.completedFuture(false);
         }
 
+        long committedStartTime = TheBrewingProject.getInstance().getTime();
         CompletableFuture<Boolean> persistence;
         try {
             persistence = TheBrewingProject.getInstance().getDatabase()
                     .startSession(SessionTypes.DISTILLERY_SESSION_TYPE)
-                    .moveBrewsAtomically(structure.getUnique(), moves);
+                    .moveBrewsAtomically(structure.getUnique(), moves, committedStartTime);
         } catch (RuntimeException | PersistenceException failure) {
             releaseAtomicMove();
             return CompletableFuture.failedFuture(failure);
         }
 
-        return publishAtomicMutation(persistence, () -> applyCommittedMoves(moves));
+        return publishAtomicMutation(persistence, () -> applyCommittedMoves(moves, committedStartTime));
     }
 
     @Override
@@ -616,37 +632,69 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
     }
 
     @Override
-    public CompletableFuture<Boolean> consumeWithoutDropsAtomically(
-            @NonNull BreweryLocation requestedLocation) {
+    public boolean atomicConsumptionPreservesWorldGeometry() {
+        return true;
+    }
+
+    @Override
+    public Optional<AtomicConsumption> prepareAtomicConsumption(
+            @NonNull BreweryLocation requestedLocation,
+            Holder.@Nullable Player actor) {
         Objects.requireNonNull(requestedLocation, "requestedLocation");
         if (!Bukkit.isOwnedByCurrentRegion(structure.getWorldOrigin())) {
-            return CompletableFuture.failedFuture(new IllegalStateException(
+            throw new IllegalStateException(
                     "Atomic distillery consumption must start on the owning region"
-            ));
+            );
         }
-        if (atomicMovePending || durablyConsumed || !ownsLiveLocation(requestedLocation)) {
-            return CompletableFuture.completedFuture(false);
+        if (isAtomicMovePending() || durablyConsumed || !ownsLiveLocation(requestedLocation)) {
+            return Optional.empty();
         }
 
         CompletableFuture<Boolean> destroyCommitSignal = new CompletableFuture<>();
         try {
+            Player player = actor == null ? null : BukkitAdapter.toPlayer(actor).orElse(null);
+            CancelState initialState = actor == null
+                    ? new CancelState.Allowed()
+                    : player != null && player.hasPermission("brewery.distillery.access")
+                    ? new CancelState.Allowed()
+                    : new CancelState.PermissionDenied(
+                    Component.translatable("tbp.distillery.access-denied"));
             DistilleryDestroyEvent event = new DistilleryDestroyEvent(
-                    new CancelState.Allowed(),
+                    initialState,
                     this,
-                    null,
+                    player,
                     BukkitAdapter.toLocation(requestedLocation).orElse(structure.getWorldOrigin()),
                     calculateDestroyDrops(),
                     destroyCommitSignal
             );
             event.callEvent();
             if (event.isCancelled() || !reserveAtomicConsumption(requestedLocation)) {
+                if (event.isCancelled()) {
+                    event.getCancelState().sendMessage(player);
+                }
                 destroyCommitSignal.complete(false);
-                return CompletableFuture.completedFuture(false);
+                return Optional.empty();
             }
         } catch (RuntimeException failure) {
             destroyCommitSignal.completeExceptionally(failure);
-            return CompletableFuture.failedFuture(failure);
+            throw failure;
         }
+
+        return Optional.of(new PreparedAtomicConsumption(
+                requestedLocation, destroyCommitSignal));
+    }
+
+    @Override
+    public CompletableFuture<Boolean> consumeWithoutDropsAtomically(
+            @NonNull BreweryLocation requestedLocation) {
+        return prepareAtomicConsumption(requestedLocation, null)
+                .map(AtomicConsumption::commit)
+                .orElseGet(() -> CompletableFuture.completedFuture(false));
+    }
+
+    private CompletableFuture<Boolean> commitReservedConsumption(
+            BreweryLocation requestedLocation,
+            CompletableFuture<Boolean> destroyCommitSignal) {
 
         CompletableFuture<Boolean> persistence;
         try {
@@ -680,6 +728,110 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
             }
         });
         return result;
+    }
+
+    private final class PreparedAtomicConsumption implements AtomicConsumption {
+
+        private final BreweryLocation requestedLocation;
+        private final CompletableFuture<Boolean> destroyCommitSignal;
+        private boolean settled;
+
+        private PreparedAtomicConsumption(
+                BreweryLocation requestedLocation,
+                CompletableFuture<Boolean> destroyCommitSignal) {
+            this.requestedLocation = requestedLocation;
+            this.destroyCommitSignal = destroyCommitSignal;
+        }
+
+        @Override
+        public synchronized boolean isValid() {
+            return !settled && ownsReservedHolder();
+        }
+
+        @Override
+        public synchronized CompletableFuture<Boolean> commit() {
+            if (settled) {
+                return CompletableFuture.completedFuture(false);
+            }
+            final boolean valid;
+            try {
+                valid = ownsReservedHolder();
+            } catch (RuntimeException | LinkageError failure) {
+                // An ownership lookup failure cannot authorize a durable delete. Keep the holder
+                // quarantined so a stale reference cannot become writable again.
+                settled = true;
+                destroyCommitSignal.completeExceptionally(failure);
+                return CompletableFuture.failedFuture(failure);
+            }
+            if (!valid) {
+                settled = true;
+                if (atomicMovePending && !durablyConsumed) {
+                    releaseAtomicMove();
+                }
+                destroyCommitSignal.complete(false);
+                return CompletableFuture.completedFuture(false);
+            }
+            settled = true;
+            return commitReservedConsumption(requestedLocation, destroyCommitSignal);
+        }
+
+        @Override
+        public synchronized void abort() {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            releaseAtomicMove();
+            destroyCommitSignal.complete(false);
+        }
+
+        private boolean ownsReservedHolder() {
+            Object currentHolder = TheBrewingProject.getInstance().getPlacedStructureRegistry()
+                    .getHolder(requestedLocation)
+                    .orElse(null);
+            return reservationOwnsHolder(
+                    atomicMovePending, durablyConsumed, BukkitDistillery.this, currentHolder);
+        }
+    }
+
+    static boolean reservationOwnsHolder(boolean pending, boolean consumed,
+                                         Object expectedHolder, Object currentHolder) {
+        return pending && !consumed && currentHolder == expectedHolder;
+    }
+
+    /**
+     * Reserves the delayed publication that finalizes an accepted inventory event.
+     * Atomic mutations and registry refreshes cannot begin until the returned idempotent release
+     * action is run.
+     */
+    public Optional<Runnable> reserveDeferredInventoryPublication() {
+        boolean reserved = TheBrewingProject.getInstance().getAtomicMutationGate()
+                .reserve(this::beginDeferredInventoryPublication);
+        if (!reserved) {
+            return Optional.empty();
+        }
+        AtomicBoolean released = new AtomicBoolean();
+        return Optional.of(() -> {
+            if (released.compareAndSet(false, true)) {
+                endDeferredInventoryPublication();
+            }
+        });
+    }
+
+    private synchronized boolean beginDeferredInventoryPublication() {
+        if (atomicMovePending || deferredInventoryPublications > 0 || durablyConsumed
+                || !ownsLiveLocation(structure.getUnique())) {
+            return false;
+        }
+        deferredInventoryPublications++;
+        return true;
+    }
+
+    private synchronized void endDeferredInventoryPublication() {
+        if (deferredInventoryPublications <= 0) {
+            throw new IllegalStateException("No deferred distillery inventory publication is pending");
+        }
+        deferredInventoryPublications--;
     }
 
     private CompletableFuture<Boolean> publishAtomicMutation(CompletableFuture<Boolean> persistence,
@@ -739,22 +891,43 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
         return result;
     }
 
-    private synchronized boolean reserveAtomicMove(List<AtomicBrewMove> moves) {
-        if (atomicMovePending || !matchesLiveState(moves)) {
+    private boolean reserveAtomicMove(List<AtomicBrewMove> moves) {
+        return TheBrewingProject.getInstance().getAtomicMutationGate()
+                .reserve(() -> reserveAtomicMoveUnderLifecycleGate(moves));
+    }
+
+    private synchronized boolean reserveAtomicMoveUnderLifecycleGate(List<AtomicBrewMove> moves) {
+        if (atomicMovePending || deferredInventoryPublications > 0
+                || !ownsLiveLocation(structure.getUnique())
+                || !matchesLiveState(moves)) {
             return false;
         }
         return suspendForAtomicMutation();
     }
 
-    private synchronized boolean reserveAtomicRemoval(List<AtomicBrewRemoval> removals) {
-        if (atomicMovePending || !matchesLiveRemovalState(removals)) {
+    private boolean reserveAtomicRemoval(List<AtomicBrewRemoval> removals) {
+        return TheBrewingProject.getInstance().getAtomicMutationGate()
+                .reserve(() -> reserveAtomicRemovalUnderLifecycleGate(removals));
+    }
+
+    private synchronized boolean reserveAtomicRemovalUnderLifecycleGate(List<AtomicBrewRemoval> removals) {
+        if (atomicMovePending || deferredInventoryPublications > 0
+                || !ownsLiveLocation(structure.getUnique())
+                || !matchesLiveRemovalState(removals)) {
             return false;
         }
         return suspendForAtomicMutation();
     }
 
-    private synchronized boolean reserveAtomicConsumption(BreweryLocation requestedLocation) {
-        if (atomicMovePending || durablyConsumed || !ownsLiveLocation(requestedLocation)) {
+    private boolean reserveAtomicConsumption(BreweryLocation requestedLocation) {
+        return TheBrewingProject.getInstance().getAtomicMutationGate()
+                .reserve(() -> reserveAtomicConsumptionUnderLifecycleGate(requestedLocation));
+    }
+
+    private synchronized boolean reserveAtomicConsumptionUnderLifecycleGate(
+            BreweryLocation requestedLocation) {
+        if (atomicMovePending || deferredInventoryPublications > 0 || durablyConsumed
+                || !ownsLiveLocation(requestedLocation)) {
             return false;
         }
         return suspendForAtomicMutation();
@@ -822,13 +995,14 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
                 && Objects.equals(first.meta(), second.meta());
     }
 
-    private void applyCommittedMoves(List<AtomicBrewMove> moves) {
+    private void applyCommittedMoves(List<AtomicBrewMove> moves, long committedStartTime) {
         for (AtomicBrewMove move : moves) {
             mixture.applyCommitted(null, move.mixturePosition());
             distillate.applyCommitted(move.distillate(), move.distillatePosition());
         }
         mixture.updateInventoryFromBrews();
         distillate.updateInventoryFromBrews();
+        startTime = committedStartTime;
     }
 
     private void applyCommittedRemovals(List<AtomicBrewRemoval> removals) {
@@ -855,11 +1029,10 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
         TheBrewingProject.getInstance().getBreweryRegistry().unregisterOpened(this);
         TheBrewingProject.getInstance().getBreweryRegistry().unregisterInventory(this);
         TheBrewingProject.getInstance().getPlacedStructureRegistry().unregisterStructure(structure);
-        structure.positions().stream()
-                .filter(position -> !position.equals(requestedLocation))
-                .map(BukkitAdapter::toLocation)
-                .flatMap(Optional::stream)
-                .forEach(location -> location.getBlock().setType(Material.AIR, false));
+        // World geometry belongs to the initiating event. In particular, an explosion may cover
+        // only part of the schematic and protection plugins may authorize an even smaller set.
+        // Removing structure.positions() here would bypass both decisions. The acknowledged
+        // caller removes its exact approved positions only after this durable publication.
         durablyConsumed = true;
     }
 
@@ -892,7 +1065,7 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
 
     @Override
     public boolean isAtomicMovePending() {
-        return atomicMovePending;
+        return atomicMovePending || deferredInventoryPublications > 0;
     }
 
     /**
@@ -919,7 +1092,7 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
 
     @Override
     public void destroy(BreweryLocation breweryLocation) {
-        if (atomicMovePending) {
+        if (isAtomicMovePending()) {
             return;
         }
         calculateDestroyDrops();

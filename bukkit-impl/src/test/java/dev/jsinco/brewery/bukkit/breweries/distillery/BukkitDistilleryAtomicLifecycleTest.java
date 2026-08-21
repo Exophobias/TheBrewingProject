@@ -103,6 +103,35 @@ class BukkitDistilleryAtomicLifecycleTest {
     }
 
     @Test
+    void pendingCloseDoesNotTouchReservedInventories() throws ReflectiveOperationException {
+        BukkitDistillery distillery = allocatePendingDistillery();
+
+        assertDoesNotThrow(() -> distillery.close(true));
+        assertTrue(distillery.isAtomicMovePending());
+    }
+
+    @Test
+    void deferredInventoryPublicationParticipatesInTheMutationGate()
+            throws ReflectiveOperationException {
+        BukkitDistillery distillery = allocatePendingDistillery();
+        setPending(distillery, false);
+        setDeferredPublications(distillery, 1);
+
+        assertTrue(distillery.isAtomicMovePending());
+        assertDoesNotThrow(() -> distillery.close(true));
+    }
+
+    @Test
+    void reservationRequiresTheExactCurrentHolder() {
+        Object expected = new Object();
+
+        assertTrue(BukkitDistillery.reservationOwnsHolder(true, false, expected, expected));
+        assertFalse(BukkitDistillery.reservationOwnsHolder(true, false, expected, new Object()));
+        assertFalse(BukkitDistillery.reservationOwnsHolder(false, false, expected, expected));
+        assertFalse(BukkitDistillery.reservationOwnsHolder(true, true, expected, expected));
+    }
+
+    @Test
     void knownFalseSchedulingFailureReleasesReservation() {
         AtomicBoolean released = new AtomicBoolean();
         IllegalStateException schedulingFailure = new IllegalStateException("injected scheduling failure");
@@ -157,6 +186,16 @@ class BukkitDistilleryAtomicLifecycleTest {
             Field pendingField = BukkitDistillery.class.getDeclaredField("atomicMovePending");
             pendingField.setAccessible(true);
             pendingField.setBoolean(distillery, pending);
+        } catch (ReflectiveOperationException failure) {
+            throw new AssertionError(failure);
+        }
+    }
+
+    private static void setDeferredPublications(BukkitDistillery distillery, int pending) {
+        try {
+            Field pendingField = BukkitDistillery.class.getDeclaredField("deferredInventoryPublications");
+            pendingField.setAccessible(true);
+            pendingField.setInt(distillery, pending);
         } catch (ReflectiveOperationException failure) {
             throw new AssertionError(failure);
         }

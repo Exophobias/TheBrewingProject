@@ -98,5 +98,6 @@ public class PlacedStructureRegistryImpl implements PlacedStructureRegistry {
     @Override
     public synchronized void clear() {
         structures.clear();
+        typedMultiBlockStructureMap.clear();
     }
 }

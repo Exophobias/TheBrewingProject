@@ -17,6 +17,7 @@ import io.papermc.paper.command.brigadier.Commands;
 import io.papermc.paper.command.brigadier.argument.ArgumentTypes;
 import io.papermc.paper.command.brigadier.argument.resolvers.selector.PlayerSelectorArgumentResolver;
 import io.papermc.paper.plugin.lifecycle.event.registrar.ReloadableRegistrarEvent;
+import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.command.CommandSender;
@@ -55,9 +56,13 @@ public class BreweryCommand {
                 .then(Commands.literal("reload")
                         .executes(context -> {
                             CommandSender sender = context.getSource().getSender();
-                            MessageUtil.message(sender, "tbp.command.reload-message");
-                            TheBrewingProject.getInstance().reload();
-                            return com.mojang.brigadier.Command.SINGLE_SUCCESS;
+                            if (TheBrewingProject.getInstance().tryReload()) {
+                                MessageUtil.message(sender, "tbp.command.reload-message");
+                                return com.mojang.brigadier.Command.SINGLE_SUCCESS;
+                            }
+                            sender.sendMessage(Component.text(
+                                    "Reload refused while an atomic distillery operation is pending."));
+                            return 0;
                         })
                         .requires(commandSourceStack -> commandSourceStack.getSender().hasPermission("brewery.command.reload"))
                 )

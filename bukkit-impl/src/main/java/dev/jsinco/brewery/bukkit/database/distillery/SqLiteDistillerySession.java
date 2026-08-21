@@ -123,10 +123,12 @@ public record SqLiteDistillerySession(Executor executor, PersistenceSupplier<Con
 
     @Override
     public CompletableFuture<Boolean> moveBrewsAtomically(BreweryLocation distilleryLocation,
-                                                           List<DistilleryAccess.AtomicBrewMove> moves) {
+                                                           List<DistilleryAccess.AtomicBrewMove> moves,
+                                                           long committedStartTime) {
         List<DistilleryAccess.AtomicBrewMove> moveSnapshot = List.copyOf(moves);
         return ingredientManagerFuture.thenApplyAsync(
-                ingredientManager -> executeAtomicMove(distilleryLocation, moveSnapshot, ingredientManager),
+                ingredientManager -> executeAtomicMove(
+                        distilleryLocation, moveSnapshot, committedStartTime, ingredientManager),
                 executor
         );
     }
@@ -261,6 +263,7 @@ public record SqLiteDistillerySession(Executor executor, PersistenceSupplier<Con
     }
 
     private boolean executeAtomicMove(BreweryLocation location, List<DistilleryAccess.AtomicBrewMove> moves,
+                                      long committedStartTime,
                                       ResolvedIngredientManager<ItemStack> ingredientManager) {
         if (moves.isEmpty() || hasOverlappingPositions(moves)) {
             return false;
@@ -293,6 +296,9 @@ public record SqLiteDistillerySession(Executor executor, PersistenceSupplier<Con
                         move.distillate(), ingredientManager) != 1) {
                     throw new SQLException("Atomic distillery move did not insert exactly one destination brew");
                 }
+            }
+            if (updateDistilleryStartTime(connection, location, committedStartTime) != 1) {
+                throw new SQLException("Atomic distillery move did not update exactly one distillery timer");
             }
             commitAttempted = true;
             connection.commit();
@@ -414,6 +420,16 @@ public record SqLiteDistillerySession(Executor executor, PersistenceSupplier<Con
         try (PreparedStatement statement = connection.prepareStatement(
                 DISTILLERY_STATEMENTS.get(SqlStatements.Type.DELETE))) {
             setLocation(statement, location, 1);
+            return statement.executeUpdate();
+        }
+    }
+
+    private static int updateDistilleryStartTime(Connection connection, BreweryLocation location,
+                                                  long committedStartTime) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                DISTILLERY_STATEMENTS.get(SqlStatements.Type.UPDATE))) {
+            statement.setLong(1, committedStartTime);
+            setLocation(statement, location, 2);
             return statement.executeUpdate();
         }
     }

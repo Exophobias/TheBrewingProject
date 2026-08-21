@@ -38,6 +38,8 @@ class SqLiteDistillerySessionTest {
     private static final BreweryLocation LOCATION = new BreweryLocation(
             14, 72, -9, UUID.fromString("43e04a8b-e2f6-494b-a065-f990d5114512")
     );
+    private static final long INITIAL_START_TIME = 17L;
+    private static final long COMMITTED_START_TIME = 23L;
 
     @TempDir
     Path tempDirectory;
@@ -58,6 +60,7 @@ class SqLiteDistillerySessionTest {
                         unique_y INTEGER,
                         unique_z INTEGER,
                         world_uuid BINARY(16),
+                        start_time INTEGER NOT NULL,
                         PRIMARY KEY (unique_x, unique_y, unique_z, world_uuid)
                     )
                     """);
@@ -99,7 +102,7 @@ class SqLiteDistillerySessionTest {
         boolean committed = session.moveBrewsAtomically(LOCATION, List.of(
                 new DistilleryAccess.AtomicBrewMove(0, 3, firstSource, firstResult),
                 new DistilleryAccess.AtomicBrewMove(1, 4, secondSource, secondResult)
-        )).join();
+        ), COMMITTED_START_TIME).join();
 
         assertTrue(committed);
         assertNull(find(0, false));
@@ -107,6 +110,7 @@ class SqLiteDistillerySessionTest {
         assertSameBrew(firstResult, find(3, true));
         assertSameBrew(secondResult, find(4, true));
         assertEquals(2, rowCount());
+        assertEquals(COMMITTED_START_TIME, findStartTime());
     }
 
     @Test
@@ -128,7 +132,7 @@ class SqLiteDistillerySessionTest {
         CompletionException failure = assertThrows(CompletionException.class, () ->
                 session.moveBrewsAtomically(LOCATION, List.of(
                         new DistilleryAccess.AtomicBrewMove(0, 2, source, brew(6))
-                )).join()
+                ), COMMITTED_START_TIME).join()
         );
 
         DistillerySession.AtomicMovePersistenceException atomicFailure =
@@ -137,6 +141,7 @@ class SqLiteDistillerySessionTest {
         assertSameBrew(source, find(0, false));
         assertNull(find(2, true));
         assertEquals(1, rowCount());
+        assertEquals(INITIAL_START_TIME, findStartTime());
     }
 
     @Test
@@ -161,7 +166,7 @@ class SqLiteDistillerySessionTest {
                 session.moveBrewsAtomically(LOCATION, List.of(
                         new DistilleryAccess.AtomicBrewMove(0, 3, firstSource, brew(8)),
                         new DistilleryAccess.AtomicBrewMove(1, 4, secondSource, brew(10))
-                )).join()
+                ), COMMITTED_START_TIME).join()
         );
 
         DistillerySession.AtomicMovePersistenceException atomicFailure =
@@ -172,6 +177,7 @@ class SqLiteDistillerySessionTest {
         assertNull(find(3, true));
         assertNull(find(4, true));
         assertEquals(2, rowCount());
+        assertEquals(INITIAL_START_TIME, findStartTime());
     }
 
     @Test
@@ -359,8 +365,9 @@ class SqLiteDistillerySessionTest {
     private void insertDistillery() throws SQLException {
         try (Connection connection = DriverManager.getConnection(jdbcUrl);
              PreparedStatement statement = connection.prepareStatement(
-                     "INSERT INTO distilleries VALUES (?, ?, ?, ?)")) {
+                     "INSERT INTO distilleries VALUES (?, ?, ?, ?, ?)")) {
             setLocation(statement);
+            statement.setLong(5, INITIAL_START_TIME);
             statement.executeUpdate();
         }
     }
@@ -399,6 +406,20 @@ class SqLiteDistillerySessionTest {
              Statement statement = connection.createStatement();
              ResultSet resultSet = statement.executeQuery("SELECT COUNT(*) FROM distilleries")) {
             return resultSet.getInt(1);
+        }
+    }
+
+    private long findStartTime() throws SQLException {
+        try (Connection connection = DriverManager.getConnection(jdbcUrl);
+             PreparedStatement statement = connection.prepareStatement("""
+                     SELECT start_time FROM distilleries
+                     WHERE unique_x = ? AND unique_y = ? AND unique_z = ? AND world_uuid = ?
+                     """)) {
+            setLocation(statement);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                assertTrue(resultSet.next());
+                return resultSet.getLong(1);
+            }
         }
     }
 

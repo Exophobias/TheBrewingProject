@@ -22,7 +22,8 @@ public interface DistillerySession extends Session<DistillerySession> {
     CompletableFuture<Void> updateBrew(BreweryLocation distilleryLocation, int inventoryPos, boolean distillateInventoryType, Brew newBrew);
 
     CompletableFuture<Boolean> moveBrewsAtomically(BreweryLocation distilleryLocation,
-                                                   List<DistilleryAccess.AtomicBrewMove> moves);
+                                                   List<DistilleryAccess.AtomicBrewMove> moves,
+                                                   long committedStartTime);
 
     CompletableFuture<Boolean> removeMixtureBrewsAtomically(BreweryLocation distilleryLocation,
                                                              List<DistilleryAccess.AtomicBrewRemoval> removals);

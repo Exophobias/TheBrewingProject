@@ -61,6 +61,7 @@ import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.jspecify.annotations.Nullable;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -68,6 +69,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
 public class BlockEventListener implements Listener {
@@ -268,6 +270,13 @@ public class BlockEventListener implements Listener {
                 .map(MultiblockStructure::getHolder)
                 .filter(InventoryAccessible.class::isInstance)
                 .map(inventoryAccessible -> (InventoryAccessible<ItemStack, Inventory>) inventoryAccessible);
+        if (inventoryAccessibleOptional.filter(BlockEventListener::isPendingAtomicDistillery).isPresent()) {
+            // access() deliberately returns empty while reserved. Explicitly erase Paper's
+            // fallback inventory as well, otherwise hoppers bypass TBP's registry and mutation
+            // listener for the duration of the atomic operation.
+            event.setInventory(null);
+            return;
+        }
         if (!Config.config().automation()) {
             inventoryAccessibleOptional.ifPresent(ignored -> event.setInventory(null));
             return;
@@ -302,55 +311,94 @@ public class BlockEventListener implements Listener {
         }
         Set<SinglePositionStructure> singlePositionStructures = new HashSet<>();
         Set<MultiblockStructure<?>> multiblockStructures = new HashSet<>();
-        Map<StructureHolder<?>, List<Brew>> holdersToDrops = new HashMap<>();
+        Map<StructureHolder<?>, Result> holderProposals = new HashMap<>();
+        List<CompletableFuture<Boolean>> destroyReceipts = new ArrayList<>();
 
-        for (Location location : locations) {
-            BreweryLocation breweryLocation = BukkitAdapter.toBreweryLocation(location);
-            Optional<SinglePositionStructure> single = breweryRegistry.getActiveSinglePositionStructure(breweryLocation)
-                    .filter(singlePositionStructure -> !singlePositionStructures.contains(singlePositionStructure));
-            CancelState cancelState = single
-                    .map(singlePositionStructure -> callSinglePositionStructureEvent(location, player, singlePositionStructure))
-                    .orElseGet(CancelState.Allowed::new);
-            if (actOnCancelState(cancelState, player)) {
-                return false;
+        try {
+            for (Location location : locations) {
+                BreweryLocation breweryLocation = BukkitAdapter.toBreweryLocation(location);
+                Optional<SinglePositionStructure> single = breweryRegistry.getActiveSinglePositionStructure(breweryLocation)
+                        .filter(singlePositionStructure -> !singlePositionStructures.contains(singlePositionStructure));
+                CancelState cancelState = single
+                        .map(singlePositionStructure -> callSinglePositionStructureEvent(location, player, singlePositionStructure))
+                        .orElseGet(CancelState.Allowed::new);
+                if (actOnCancelState(cancelState, player)) {
+                    return rejectDestroyProposals(destroyReceipts);
+                }
+                single.ifPresent(singlePositionStructures::add);
+
+                Optional<StructureHolder<?>> structureHolderOptional = placedStructureRegistry.getHolder(breweryLocation)
+                        .filter(structureHolder -> !multiblockStructures.contains(structureHolder.getStructure()));
+                Result result = structureHolderOptional
+                        .map(holder -> callPlacedStructureEvent(location, player, holder))
+                        .orElseGet(() -> new Result(new CancelState.Allowed(), List.of(), null));
+                if (result.commitSignal() != null) {
+                    destroyReceipts.add(result.commitSignal());
+                }
+                if (actOnCancelState(result.cancelState(), player)) {
+                    return rejectDestroyProposals(destroyReceipts);
+                }
+                structureHolderOptional.ifPresent(holder -> {
+                    holderProposals.put(holder, result);
+                    multiblockStructures.add(holder.getStructure());
+                });
             }
-            single.ifPresent(singlePositionStructures::add);
 
-            Optional<StructureHolder<?>> structureHolderOptional = placedStructureRegistry.getHolder(breweryLocation)
-                    .filter(structureHolder -> !multiblockStructures.contains(structureHolder.getStructure()));
-            Result result = structureHolderOptional
-                    .map(holder -> callPlacedStructureEvent(location, player, holder))
-                    .orElseGet(() -> new Result(new CancelState.Allowed(), List.of()));
-            if (actOnCancelState(result.cancelState(), player)) {
-                return false;
+            // DistilleryDestroyEvent is intentionally mutable, so a later listener can undo the
+            // initial cancellation used for an atomic reservation. Authorization output is not an
+            // ownership token: recheck the holder immediately before any registry or inventory
+            // mutation and keep the whole multi-block change atomic when one is reserved.
+            if (containsPendingAtomicDistillery(holderProposals.keySet())) {
+                return rejectDestroyProposals(destroyReceipts);
             }
-            structureHolderOptional.ifPresent(holder -> {
-                holdersToDrops.put(holder, result.drops);
-                multiblockStructures.add(holder.getStructure());
-            });
-        }
 
-        // DistilleryDestroyEvent is intentionally mutable, so a later listener can undo the
-        // initial cancellation used for an atomic reservation. Authorization output is not an
-        // ownership token: recheck the holder immediately before any registry or inventory
-        // mutation and keep the whole multi-block change atomic when one is reserved.
-        if (containsPendingAtomicDistillery(holdersToDrops.keySet())) {
-            return false;
-        }
-
-        singlePositionStructures.forEach(ListenerUtil::removeActiveSinglePositionStructure);
-        multiblockStructures.forEach(placedStructureRegistry::unregisterStructure);
-        Location location = locations.getFirst();
-        for (Map.Entry<StructureHolder<?>, List<Brew>> entry : holdersToDrops.entrySet()) {
-            StructureHolder<?> holder = entry.getKey();
-            List<Brew> drops = entry.getValue();
-            if (holder instanceof InventoryAccessible inventoryAccessible) {
-                breweryRegistry.unregisterInventory(inventoryAccessible);
+            singlePositionStructures.forEach(ListenerUtil::removeActiveSinglePositionStructure);
+            multiblockStructures.forEach(placedStructureRegistry::unregisterStructure);
+            Location location = locations.getFirst();
+            for (Map.Entry<StructureHolder<?>, Result> entry : holderProposals.entrySet()) {
+                StructureHolder<?> holder = entry.getKey();
+                Result proposal = entry.getValue();
+                if (holder instanceof InventoryAccessible inventoryAccessible) {
+                    breweryRegistry.unregisterInventory(inventoryAccessible);
+                }
+                remove(holder, proposal.commitSignal());
+                LocationUtil.dropBrews(location, proposal.drops());
             }
-            remove(holder);
-            LocationUtil.dropBrews(location, drops);
+            return true;
+        } catch (RuntimeException | Error failure) {
+            completeDestroyProposals(destroyReceipts, null, failure);
+            throw failure;
         }
-        return true;
+    }
+
+    static boolean rejectDestroyProposals(
+            Iterable<? extends CompletableFuture<Boolean>> destroyReceipts) {
+        completeDestroyProposals(destroyReceipts, false, null);
+        return false;
+    }
+
+    static void completeDestroyProposals(
+            Iterable<? extends CompletableFuture<Boolean>> destroyReceipts,
+            @Nullable Boolean committed,
+            @Nullable Throwable failure) {
+        for (CompletableFuture<Boolean> receipt : destroyReceipts) {
+            if (failure == null) {
+                receipt.complete(Boolean.TRUE.equals(committed));
+            } else {
+                receipt.completeExceptionally(failure);
+            }
+        }
+    }
+
+    static void linkDestroyReceipt(CompletableFuture<Boolean> receipt,
+                                   CompletableFuture<?> persistence) {
+        persistence.whenComplete((ignored, failure) -> {
+            if (failure == null) {
+                receipt.complete(true);
+            } else {
+                receipt.completeExceptionally(failure);
+            }
+        });
     }
 
     static boolean containsPendingAtomicDistillery(
@@ -362,6 +410,11 @@ public class BlockEventListener implements Listener {
             }
         }
         return false;
+    }
+
+    static boolean isPendingAtomicDistillery(InventoryAccessible<?, ?> inventoryAccessible) {
+        return inventoryAccessible instanceof BukkitDistillery distillery
+                && distillery.isAtomicMovePending();
     }
 
     /**
@@ -405,7 +458,7 @@ public class BlockEventListener implements Listener {
                         barrel.calculateDestroyDrops()
                 );
                 event.callEvent();
-                yield new Result(event.getCancelState(), event.getDrops());
+                yield new Result(event.getCancelState(), event.getDrops(), null);
             }
             case BukkitDistillery distillery -> {
                 CancelState initialState = distillery.isAtomicMovePending()
@@ -413,24 +466,33 @@ public class BlockEventListener implements Listener {
                         : player == null || player.hasPermission("brewery.distillery.access")
                         ? new CancelState.Allowed()
                         : new CancelState.PermissionDenied(Component.translatable("tbp.distillery.access-denied"));
+                CompletableFuture<Boolean> commitSignal = new CompletableFuture<>();
                 DistilleryDestroyEvent event = new DistilleryDestroyEvent(
                         initialState,
                         distillery,
                         player,
                         location,
-                        distillery.calculateDestroyDrops()
+                        distillery.calculateDestroyDrops(),
+                        commitSignal
                 );
-                event.callEvent();
-                yield new Result(event.getCancelState(), event.getDrops());
+                try {
+                    event.callEvent();
+                } catch (RuntimeException | Error failure) {
+                    commitSignal.completeExceptionally(failure);
+                    throw failure;
+                }
+                yield new Result(event.getCancelState(), event.getDrops(), commitSignal);
             }
-            default -> new Result(new CancelState.Allowed(), Collections.emptyList());
+            default -> new Result(new CancelState.Allowed(), Collections.emptyList(), null);
         };
     }
 
-    private record Result(CancelState cancelState, List<Brew> drops) {
+    private record Result(CancelState cancelState, List<Brew> drops,
+                          @Nullable CompletableFuture<Boolean> commitSignal) {
     }
 
-    private void remove(StructureHolder<?> holder) {
+    private void remove(StructureHolder<?> holder,
+                        @Nullable CompletableFuture<Boolean> commitSignal) {
         try {
             switch (holder) {
                 case BukkitBarrel barrel -> {
@@ -440,13 +502,30 @@ public class BlockEventListener implements Listener {
                 }
                 case BukkitDistillery distillery -> {
                     distillery.destroyWithoutDrops();
-                    database.startSession(SessionTypes.DISTILLERY_SESSION_TYPE).removeDistillery(distillery)
-                            .exceptionally(Logger::logAndTrackErr);
+                    CompletableFuture<Void> persistence = database
+                            .startSession(SessionTypes.DISTILLERY_SESSION_TYPE)
+                            .removeDistillery(distillery);
+                    if (commitSignal != null) {
+                        linkDestroyReceipt(commitSignal, persistence);
+                    }
+                    persistence.whenComplete((ignored, failure) -> {
+                        if (failure != null) {
+                            Logger.logAndTrackErr(failure);
+                        }
+                    });
                 }
                 default -> throw new IllegalArgumentException("Unknown structure type");
             }
         } catch (PersistenceException e) {
+            if (commitSignal != null) {
+                commitSignal.completeExceptionally(e);
+            }
             Logger.logErr(e);
+        } catch (RuntimeException | Error failure) {
+            if (commitSignal != null) {
+                commitSignal.completeExceptionally(failure);
+            }
+            throw failure;
         }
     }
 }

@@ -92,31 +92,47 @@ public class InventoryEventListener implements Listener {
             return;
         }
         List<? extends ItemTransactionEvent<?>> transactions = compileTransactionsFromClick(event, upperInventoryIsClicked, inventoryAccessible);
-        for (ItemTransactionEvent<?> transactionEvent : transactions) {
-            if (!transactionEvent.callEvent()) {
-                if (transactionEvent.getCancelState() instanceof dev.jsinco.brewery.api.util.CancelState.PermissionDenied(
-                        Component denyMessage
-                )) {
-                    event.getWhoClicked().sendMessage(denyMessage);
-                }
-                event.setResult(Event.Result.DENY);
-                return;
-            }
+        if (transactions.isEmpty()) {
+            return;
         }
-        for (ItemTransactionEvent<?> transactionEvent : transactions) {
-            if (transactionEvent instanceof DistilleryExtractEvent || transactionEvent instanceof BarrelExtractEvent) {
-                ItemSource brewItemStack = transactionEvent.getTransactionSession().getResult();
-                if (brewItemStack == null) {
-                    continue;
-                }
-                Optional.ofNullable(brewItemStack.get().getPersistentDataContainer().get(BrewAdapterAccess.BREWERY_SCORE, PersistentDataType.DOUBLE))
-                        .ifPresent(score -> Statistics.registerBrewMade(BrewQuality.quality(score).orElse(null)));
-            }
+        Optional<Runnable> deferredRelease = reserveDeferredPublication(inventoryAccessible);
+        if (deferredRelease.isEmpty()) {
+            event.setResult(Event.Result.DENY);
+            return;
         }
-        event.getWhoClicked().getScheduler().run(TheBrewingProject.getInstance(), ignored ->
-                        displayEventResult(event.getView(), transactions),
-                null
-        );
+        Runnable release = deferredRelease.get();
+        try {
+            for (ItemTransactionEvent<?> transactionEvent : transactions) {
+                if (!transactionEvent.callEvent()) {
+                    if (transactionEvent.getCancelState() instanceof dev.jsinco.brewery.api.util.CancelState.PermissionDenied(
+                            Component denyMessage
+                    )) {
+                        event.getWhoClicked().sendMessage(denyMessage);
+                    }
+                    event.setResult(Event.Result.DENY);
+                    release.run();
+                    return;
+                }
+            }
+            for (ItemTransactionEvent<?> transactionEvent : transactions) {
+                if (transactionEvent instanceof DistilleryExtractEvent || transactionEvent instanceof BarrelExtractEvent) {
+                    ItemSource brewItemStack = transactionEvent.getTransactionSession().getResult();
+                    if (brewItemStack == null) {
+                        continue;
+                    }
+                    Optional.ofNullable(brewItemStack.get().getPersistentDataContainer().get(BrewAdapterAccess.BREWERY_SCORE, PersistentDataType.DOUBLE))
+                            .ifPresent(score -> Statistics.registerBrewMade(BrewQuality.quality(score).orElse(null)));
+                }
+            }
+            scheduleDeferredPublication(
+                    event.getWhoClicked(),
+                    () -> displayEventResult(event.getView(), transactions),
+                    release
+            );
+        } catch (RuntimeException | Error failure) {
+            release.run();
+            throw failure;
+        }
     }
 
     private void displayEventResult(@NonNull InventoryView view, List<? extends ItemTransactionEvent<?>> transactions) {
@@ -378,24 +394,40 @@ public class InventoryEventListener implements Listener {
                         true,
                         dragEvent.getWhoClicked() instanceof Player player ? player : null
                 )).toList();
-        List<dev.jsinco.brewery.api.util.CancelState> cancelled = transactionEvents.stream()
-                .filter(transactionEvent -> !transactionEvent.callEvent())
-                .map(ItemTransactionEvent::getCancelState)
-                .toList();
-        if (!cancelled.isEmpty()) {
-            cancelled.stream()
-                    .filter(dev.jsinco.brewery.api.util.CancelState.PermissionDenied.class::isInstance)
-                    .map(dev.jsinco.brewery.api.util.CancelState.PermissionDenied.class::cast)
-                    .map(dev.jsinco.brewery.api.util.CancelState.PermissionDenied::message)
-                    .forEach(dragEvent.getWhoClicked()::sendMessage);
+        if (transactionEvents.isEmpty()) {
+            return;
+        }
+        Optional<Runnable> deferredRelease = reserveDeferredPublication(inventoryAccessible);
+        if (deferredRelease.isEmpty()) {
             dragEvent.setCancelled(true);
             return;
         }
+        Runnable release = deferredRelease.get();
+        try {
+            List<dev.jsinco.brewery.api.util.CancelState> cancelled = transactionEvents.stream()
+                    .filter(transactionEvent -> !transactionEvent.callEvent())
+                    .map(ItemTransactionEvent::getCancelState)
+                    .toList();
+            if (!cancelled.isEmpty()) {
+                cancelled.stream()
+                        .filter(dev.jsinco.brewery.api.util.CancelState.PermissionDenied.class::isInstance)
+                        .map(dev.jsinco.brewery.api.util.CancelState.PermissionDenied.class::cast)
+                        .map(dev.jsinco.brewery.api.util.CancelState.PermissionDenied::message)
+                        .forEach(dragEvent.getWhoClicked()::sendMessage);
+                dragEvent.setCancelled(true);
+                release.run();
+                return;
+            }
 
-        dragEvent.getWhoClicked().getScheduler().run(TheBrewingProject.getInstance(), ignored ->
-                        displayEventResult(inventoryView, transactionEvents),
-                null
-        );
+            scheduleDeferredPublication(
+                    dragEvent.getWhoClicked(),
+                    () -> displayEventResult(inventoryView, transactionEvents),
+                    release
+            );
+        } catch (RuntimeException | Error failure) {
+            release.run();
+            throw failure;
+        }
     }
 
     @EventHandler(ignoreCancelled = true)
@@ -450,5 +482,28 @@ public class InventoryEventListener implements Listener {
 
     private static boolean atomicMovePending(InventoryAccessible<ItemStack, Inventory> inventoryAccessible) {
         return inventoryAccessible instanceof BukkitDistillery distillery && distillery.isAtomicMovePending();
+    }
+
+    private static Optional<Runnable> reserveDeferredPublication(
+            InventoryAccessible<ItemStack, Inventory> inventoryAccessible) {
+        if (inventoryAccessible instanceof BukkitDistillery distillery) {
+            return distillery.reserveDeferredInventoryPublication();
+        }
+        return Optional.of(() -> { });
+    }
+
+    private static void scheduleDeferredPublication(
+            org.bukkit.entity.HumanEntity viewer, Runnable publication, Runnable release) {
+        viewer.getScheduler().run(
+                TheBrewingProject.getInstance(),
+                ignored -> {
+                    try {
+                        publication.run();
+                    } finally {
+                        release.run();
+                    }
+                },
+                release
+        );
     }
 }

@@ -1,6 +1,8 @@
 package dev.jsinco.brewery.bukkit.listener;
 
 import dev.jsinco.brewery.api.util.Logger;
+import dev.jsinco.brewery.api.structure.StructureType;
+import dev.jsinco.brewery.bukkit.TheBrewingProject;
 import dev.jsinco.brewery.bukkit.breweries.BreweryRegistry;
 import dev.jsinco.brewery.bukkit.breweries.barrel.BukkitBarrel;
 import dev.jsinco.brewery.bukkit.breweries.distillery.BukkitDistillery;
@@ -37,10 +39,40 @@ public class WorldEventListener implements Listener {
         loadWorld(event.getWorld());
     }
 
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void guardWorldUnload(WorldUnloadEvent event) {
+        if (hasPendingAtomicDistilleryMutation(event.getWorld().getUID())) {
+            event.setCancelled(true);
+            Logger.logErr("World unload was refused because an atomic distillery mutation is pending in "
+                    + event.getWorld().getName());
+        }
+    }
+
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onWorldUnload(WorldUnloadEvent event) {
-        placedStructureRegistry.unloadWorld(event.getWorld().getUID());
-        registry.unloadWorld(event.getWorld().getUID());
+        var lifecycleGate = TheBrewingProject.getInstance().getAtomicMutationGate();
+        var worldUuid = event.getWorld().getUID();
+        if (!lifecycleGate.beginRefresh(() -> hasPendingAtomicDistilleryMutation(worldUuid))) {
+            event.setCancelled(true);
+            Logger.logErr("World unload was refused because an atomic distillery mutation is pending in "
+                    + event.getWorld().getName());
+            return;
+        }
+        try {
+            placedStructureRegistry.unloadWorld(worldUuid);
+            registry.unloadWorld(worldUuid);
+        } finally {
+            lifecycleGate.endRefresh();
+        }
+    }
+
+    private boolean hasPendingAtomicDistilleryMutation(java.util.UUID worldUuid) {
+        return placedStructureRegistry.getStructures(StructureType.DISTILLERY).stream()
+                .filter(structure -> structure.getUnique().worldUuid().equals(worldUuid))
+                .map(structure -> structure.getHolder())
+                .filter(BukkitDistillery.class::isInstance)
+                .map(BukkitDistillery.class::cast)
+                .anyMatch(BukkitDistillery::isAtomicMovePending);
     }
 
     private void loadWorld(World world) {
