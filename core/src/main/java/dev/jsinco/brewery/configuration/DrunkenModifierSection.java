@@ -31,7 +31,7 @@ import java.util.Set;
         "This configuration file allows full customization with how to represent the state, and how it changes over time.",
         "consumed_<modifier-name> is only a non zero variable when something is consumed"
 })
-public class DrunkenModifierSection extends OkaeriConfig {
+public class DrunkenModifierSection extends FileClosedConfig {
 
     @CustomKey("drunken-modifiers")
     @Comment({"This is where you define all modifiers that can affect the player, used in drunken events.",

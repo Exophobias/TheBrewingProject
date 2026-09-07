@@ -21,11 +21,22 @@ public class PlacedStructureRegistryImpl implements PlacedStructureRegistry {
     private final Map<StructureType<?>, Set<MultiblockStructure<?>>> typedMultiBlockStructureMap = new ConcurrentHashMap<>();
 
     public synchronized void registerStructures(Collection<? extends MultiblockStructure<?>> multiblockStructures) {
+        Map<BreweryLocation, MultiblockStructure<?>> proposed = new java.util.HashMap<>();
+        for (MultiblockStructure<?> structure : multiblockStructures) {
+            for (BreweryLocation location : structure.positions()) {
+                MultiblockStructure<?> previous = proposed.putIfAbsent(location, structure);
+                if (previous != null && previous != structure) {
+                    throw new IllegalStateException("Overlapping structures in registry batch");
+                }
+            }
+            requireUnoccupied(structure);
+        }
         multiblockStructures.forEach(this::registerStructure);
     }
 
     @Override
     public synchronized void registerStructure(MultiblockStructure<?> multiblockStructure) {
+        requireUnoccupied(multiblockStructure);
         for (BreweryLocation location : multiblockStructure.positions()) {
             UUID worldUuid = location.worldUuid();
             structures.computeIfAbsent(worldUuid, ignored -> new ConcurrentHashMap<>()).put(location.toVector(), multiblockStructure);
@@ -33,17 +44,33 @@ public class PlacedStructureRegistryImpl implements PlacedStructureRegistry {
         typedMultiBlockStructureMap.computeIfAbsent(multiblockStructure.getHolder().getStructureType(), ignored -> ConcurrentHashMap.newKeySet()).add(multiblockStructure);
     }
 
+    // A delayed load cannot take ownership away from an already published holder.
+    private void requireUnoccupied(MultiblockStructure<?> structure) {
+        if (structure.getHolder() == null || structure.getHolder().getStructureType() == null) {
+            throw new IllegalStateException("Structure must have a typed holder before publication");
+        }
+        for (BreweryLocation location : structure.positions()) {
+            MultiblockStructure<?> existing = getStructure(location).orElse(null);
+            if (existing != null && existing != structure) {
+                throw new IllegalStateException("A different structure already owns this location");
+            }
+        }
+    }
+
     @Override
     public synchronized void unregisterStructure(MultiblockStructure<?> structure) {
         for (BreweryLocation location : structure.positions()) {
             UUID worldUuid = location.worldUuid();
-            structures.computeIfAbsent(worldUuid, ignored -> new ConcurrentHashMap<>()).remove(location.toVector());
+            var world = structures.get(worldUuid);
+            if (world != null) {
+                world.computeIfPresent(location.toVector(), (ignored, current) -> current == structure ? null : current);
+            }
         }
         typedMultiBlockStructureMap.computeIfAbsent(structure.getHolder().getStructureType(), ignored -> ConcurrentHashMap.newKeySet()).remove(structure);
     }
 
     @Override
-    public Optional<MultiblockStructure<?>> getStructure(BreweryLocation location) {
+    public synchronized Optional<MultiblockStructure<?>> getStructure(BreweryLocation location) {
         UUID worldUuid = location.worldUuid();
         Map<BreweryVector, MultiblockStructure<?>> placedBreweryStructureMap = structures.get(worldUuid);
         if (placedBreweryStructureMap == null) {
@@ -53,7 +80,7 @@ public class PlacedStructureRegistryImpl implements PlacedStructureRegistry {
     }
 
     @Override
-    public Set<MultiblockStructure<?>> getStructures(Collection<BreweryLocation> locations) {
+    public synchronized Set<MultiblockStructure<?>> getStructures(Collection<BreweryLocation> locations) {
         Set<MultiblockStructure<?>> breweryStructures = new HashSet<>();
         for (BreweryLocation location : locations) {
             getStructure(location).ifPresent(breweryStructures::add);
@@ -69,12 +96,12 @@ public class PlacedStructureRegistryImpl implements PlacedStructureRegistry {
         return typedMultiBlockStructureMap.get(structureType).size();
     }
 
-    public Set<MultiblockStructure<?>> getStructures(StructureType<?> structureType) {
-        return typedMultiBlockStructureMap.getOrDefault(structureType, Set.of());
+    public synchronized Set<MultiblockStructure<?>> getStructures(StructureType<?> structureType) {
+        return Set.copyOf(typedMultiBlockStructureMap.getOrDefault(structureType, Set.of()));
     }
 
     @Override
-    public Optional<StructureHolder<?>> getHolder(BreweryLocation location) {
+    public synchronized Optional<StructureHolder<?>> getHolder(BreweryLocation location) {
         UUID worldUuid = location.worldUuid();
         Map<BreweryVector, MultiblockStructure<? extends StructureHolder<?>>> placedBreweryStructureMap = structures.get(worldUuid);
         if (placedBreweryStructureMap == null) {

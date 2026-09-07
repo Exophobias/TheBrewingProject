@@ -155,6 +155,7 @@ public class TheBrewingProject extends JavaPlugin implements TheBrewingProjectAp
     private final IntegrationManagerImpl integrationManager = new IntegrationManagerImpl();
     private final ActiveEventsRegistry activeEventsRegistry = new ActiveEventsRegistry();
     private final AtomicMutationGate atomicMutationGate = new AtomicMutationGate();
+    private final OwnerPublicationQueue ownerPublications = new OwnerPublicationQueue();
     private PlayerWalkListener playerWalkListener;
     private ModifierManager modifierManager = new ModifierManagerImpl();
     private BreweryTranslator translator;
@@ -253,6 +254,7 @@ public class TheBrewingProject extends JavaPlugin implements TheBrewingProjectAp
             return false;
         }
         try {
+            worldEventListener.invalidateAll();
             reloadNow();
             return true;
         } finally {
@@ -263,7 +265,7 @@ public class TheBrewingProject extends JavaPlugin implements TheBrewingProjectAp
     private void reloadNow() {
         Migrations.migrateAllConfigFiles(this.getDataFolder());
         saveResources();
-        closeDatabase();
+        flushDatabase();
         Config.config().load(true);
         DrunkenModifierSection.modifiers().load(true);
         EventSection.events().load(true);
@@ -285,31 +287,10 @@ public class TheBrewingProject extends JavaPlugin implements TheBrewingProjectAp
         saveResources();
         // Registered listeners retain this database instance. Replacing it here would split
         // ordered writes and reads across the old listener executor and a new atomic executor.
-        // closeDatabase() already flushes the shared instance before registries are rebuilt.
+        // flushDatabase() already flushes the shared instance before registries are rebuilt.
         this.drunksManager.reset(EventSection.events().enabledRandomEvents().stream().map(EventData::deserialize).collect(Collectors.toSet()));
         worldEventListener.init();
-        recipeRegistry.clear();
-        RecipeReader<ItemStack> recipeReader = new RecipeReader<>(this.getDataFolder(), new BukkitRecipeResultReader(), BukkitIngredientManager.INSTANCE);
-
-        List<CompletableFuture<RecipeImpl<ItemStack>>> recipeFutures = recipeReader.readRecipes();
-        CompletableFuture.allOf(recipeFutures.toArray(CompletableFuture<?>[]::new))
-                .thenRunAsync(() -> {
-                    recipeFutures.stream()
-                            .map(f -> f.getNow(null))
-                            .filter(Objects::nonNull)
-                            .forEach(recipeRegistry::registerRecipe);
-                    new AsyncRecipesLoadedEvent(recipeRegistry).callEvent();
-                });
-        DefaultRecipeReader.readDefaultRecipes(this.getDataFolder()).forEach((string, defaultRecipe) -> defaultRecipe
-                .whenComplete((defaultRecipe1, throwable) -> {
-                    if (throwable != null) {
-                        Logger.logErr("Could not read default recipe: " + string);
-                        Logger.logErr(throwable);
-                        return;
-                    }
-                    this.recipeRegistry.registerDefaultRecipe(string, defaultRecipe1);
-                })
-        );
+        loadRecipes();
         loadDrunkenReplacements();
         loadTimeFormats();
         new TBPReloadEvent().callEvent();
@@ -433,27 +414,7 @@ public class TheBrewingProject extends JavaPlugin implements TheBrewingProjectAp
         Bukkit.getGlobalRegionScheduler().runAtFixedRate(this, this::otherTicking, 1, 1);
         IngredientsSection.load(this.getDataFolder(), serializers());
         IngredientsSection.validate(BukkitIngredientManager.INSTANCE, BukkitIngredientUtil::tagValuesFromString);
-        RecipeReader<ItemStack> recipeReader = new RecipeReader<>(this.getDataFolder(), new BukkitRecipeResultReader(), BukkitIngredientManager.INSTANCE);
-
-        List<CompletableFuture<RecipeImpl<ItemStack>>> recipeFutures = recipeReader.readRecipes();
-        CompletableFuture.allOf(recipeFutures.toArray(new CompletableFuture[0]))
-                .thenRunAsync(() -> {
-                    recipeFutures.stream()
-                            .map(CompletableFuture::join)
-                            .filter(Objects::nonNull)
-                            .forEach(recipeRegistry::registerRecipe);
-                    new AsyncRecipesLoadedEvent(recipeRegistry).callEvent();
-                });
-        DefaultRecipeReader.readDefaultRecipes(this.getDataFolder()).forEach((string, defaultRecipe) -> defaultRecipe
-                .whenComplete((defaultRecipe1, throwable) -> {
-                    if (throwable != null) {
-                        Logger.logErr("Could not read default recipe: " + string);
-                        Logger.logErr(throwable);
-                        return;
-                    }
-                    this.recipeRegistry.registerDefaultRecipe(string, defaultRecipe1);
-                })
-        );
+        loadRecipes();
         CompletableFuture.allOf(integrationManager.retrieve(IntegrationTypes.ITEM).stream().map(ItemIntegration::initialized)
                         .toArray(CompletableFuture<?>[]::new))
                 .thenAccept(ignored -> ingredientManagerFuture.complete(new ResolvedIngredientManagerImpl()));
@@ -465,11 +426,26 @@ public class TheBrewingProject extends JavaPlugin implements TheBrewingProjectAp
 
     @Override
     public void onDisable() {
-        closeDatabase();
-        this.metrics.shutdown();
+        if (worldEventListener != null) {
+            worldEventListener.stop();
+        } else {
+            atomicMutationGate.stop();
+        }
+        if (recipeRegistry != null) {
+            recipeRegistry.invalidatePendingLoads();
+        }
+        ownerPublications.stop();
+        ingredientManagerFuture.completeExceptionally(new java.util.concurrent.CancellationException("Plugin is stopping"));
+        try {
+            flushDatabase();
+        } finally {
+            if (database != null) database.close().join();
+            this.metrics.shutdown();
+        }
     }
 
-    private void closeDatabase() {
+    private void flushDatabase() {
+        if (database == null) return;
         try {
             breweryRegistry.iterate(StructureType.BARREL, inventoryAccessible -> inventoryAccessible.close(true));
             breweryRegistry.iterate(StructureType.DISTILLERY, inventoryAccessible -> inventoryAccessible.close(true));
@@ -618,8 +594,34 @@ public class TheBrewingProject extends JavaPlugin implements TheBrewingProjectAp
         return this.drunkEventExecutor;
     }
 
+    private void loadRecipes() {
+        long generation = recipeRegistry.beginLoad();
+        RecipeReader<ItemStack> reader = new RecipeReader<>(getDataFolder(),
+                new BukkitRecipeResultReader(), BukkitIngredientManager.INSTANCE);
+        var recipes = reader.readRecipes();
+        var defaults = DefaultRecipeReader.readDefaultRecipes(getDataFolder());
+        var pending = new java.util.ArrayList<CompletableFuture<?>>();
+        pending.addAll(recipes);
+        pending.addAll(defaults.values());
+        CompletableFuture.allOf(pending.toArray(CompletableFuture<?>[]::new))
+                .thenRunAsync(() -> {
+                    var loadedDefaults = new java.util.LinkedHashMap<String,
+                            dev.jsinco.brewery.api.recipe.DefaultRecipe<ItemStack>>();
+                    defaults.forEach((name, future) -> loadedDefaults.put(name, future.join()));
+                    var loaded = recipes.stream().map(CompletableFuture::join)
+                            .filter(Objects::nonNull).toList();
+                    if (recipeRegistry.publishLoad(generation, loaded, loadedDefaults)) {
+                        new AsyncRecipesLoadedEvent(recipeRegistry).callEvent();
+                    }
+                }).exceptionally(Logger::logAndTrackErr);
+    }
+
     public AtomicMutationGate getAtomicMutationGate() {
         return atomicMutationGate;
+    }
+
+    public OwnerPublicationQueue getOwnerPublications() {
+        return ownerPublications;
     }
 
     public long getTime() {

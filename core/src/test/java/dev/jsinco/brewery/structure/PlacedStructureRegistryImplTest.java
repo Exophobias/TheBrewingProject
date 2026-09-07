@@ -11,9 +11,74 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PlacedStructureRegistryImplTest {
+
+    @Test
+    void staleUnregisterCannotEraseReplacementAfterReload() {
+        PlacedStructureRegistryImpl registry = new PlacedStructureRegistryImpl();
+        BreweryLocation location = new BreweryLocation(1, 2, 3, UUID.randomUUID());
+        TestStructure stale = new TestStructure(location);
+        TestStructure current = new TestStructure(location);
+        registry.registerStructure(stale);
+        registry.clear();
+        registry.registerStructure(current);
+        registry.unregisterStructure(stale);
+        assertSame(current, registry.getStructure(location).orElseThrow());
+        assertEquals(1, registry.countStructureType(StructureType.DISTILLERY));
+    }
+
+    @Test
+    void delayedLoadCannotReplaceAnExistingHolderOrPartiallyPublishBatch() {
+        PlacedStructureRegistryImpl registry = new PlacedStructureRegistryImpl();
+        UUID world = UUID.randomUUID();
+        BreweryLocation occupied = new BreweryLocation(1, 2, 3, world);
+        BreweryLocation vacant = new BreweryLocation(4, 5, 6, world);
+        TestStructure current = new TestStructure(occupied);
+        registry.registerStructure(current);
+        assertThrows(IllegalStateException.class, () -> registry.registerStructure(new TestStructure(occupied)));
+        assertThrows(IllegalStateException.class, () -> registry.registerStructures(
+                List.of(new TestStructure(vacant), new TestStructure(occupied))));
+        assertSame(current, registry.getStructure(occupied).orElseThrow());
+        assertTrue(registry.getStructure(vacant).isEmpty());
+        assertEquals(1, registry.countStructureType(StructureType.DISTILLERY));
+    }
+
+    @Test
+    void overlappingBatchIsRejectedBeforeEitherHolderIsPublished() {
+        PlacedStructureRegistryImpl registry = new PlacedStructureRegistryImpl();
+        BreweryLocation location = new BreweryLocation(1, 2, 3, UUID.randomUUID());
+        assertThrows(IllegalStateException.class, () -> registry.registerStructures(
+                List.of(new TestStructure(location), new TestStructure(location))));
+        assertTrue(registry.getStructure(location).isEmpty());
+        assertEquals(0, registry.countStructureType(StructureType.DISTILLERY));
+    }
+
+    @Test
+    void uninitializedHolderCannotPartiallyPublishItsBatch() {
+        PlacedStructureRegistryImpl registry = new PlacedStructureRegistryImpl();
+        BreweryLocation first = new BreweryLocation(1, 2, 3, UUID.randomUUID());
+        TestStructure invalid = new TestStructure(first.add(1, 0, 0));
+        invalid.setHolder(null);
+        assertThrows(IllegalStateException.class, () -> registry.registerStructures(
+                List.of(new TestStructure(first), invalid)));
+        assertTrue(registry.getStructure(first).isEmpty());
+        assertTrue(registry.getStructure(invalid.getUnique()).isEmpty());
+        assertEquals(0, registry.countStructureType(StructureType.DISTILLERY));
+    }
+
+    @Test
+    void publishedTypedViewCannotBeUsedToMutateRegistry() {
+        PlacedStructureRegistryImpl registry = new PlacedStructureRegistryImpl();
+        TestStructure structure = new TestStructure(new BreweryLocation(1, 2, 3, UUID.randomUUID()));
+        registry.registerStructure(structure);
+        var snapshot = registry.getStructures(StructureType.DISTILLERY);
+        assertThrows(UnsupportedOperationException.class, snapshot::clear);
+        registry.clear();
+        assertEquals(1, snapshot.size());
+    }
 
     @Test
     void clearRemovesCoordinateAndTypedIndexes() {

@@ -11,6 +11,7 @@ import org.jspecify.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 
@@ -24,10 +25,19 @@ public class PlacedBreweryStructure<H extends StructureHolder<H>> implements Mul
 
     public PlacedBreweryStructure(BreweryStructure structure, Matrix3d transformation,
                                   Location worldOrigin) {
+        this(structure, transformation, worldOrigin, null);
+    }
+
+    /** Restores the exact database key of an existing structure, including legacy keys. */
+    public PlacedBreweryStructure(BreweryStructure structure, Matrix3d transformation,
+                                  Location worldOrigin, @Nullable BreweryLocation persistedUnique) {
         this.structure = structure;
         this.transformation = transformation;
         this.worldOrigin = worldOrigin;
-        this.unique = compileUnique();
+        if (persistedUnique != null && !positions().contains(persistedUnique)) {
+            throw new IllegalArgumentException("Persisted structure key is outside its footprint");
+        }
+        this.unique = persistedUnique == null ? compileUnique() : persistedUnique;
     }
 
     public static <H extends StructureHolder<H>> Optional<Pair<PlacedBreweryStructure<H>, BreweryKey>> findValid(BreweryStructure structure, Location worldOrigin) {
@@ -62,9 +72,9 @@ public class PlacedBreweryStructure<H extends StructureHolder<H>> implements Mul
     }
 
     private BreweryLocation compileUnique() {
-        List<BreweryLocation> positions = new ArrayList<>(positions());
-        positions.sort(this::comparePositions);
-        return positions.getFirst();
+        return positions().stream().max(Comparator.comparingInt(BreweryLocation::y)
+                .thenComparingInt(BreweryLocation::x).thenComparingInt(BreweryLocation::z))
+                .orElseThrow(() -> new IllegalArgumentException("Structure has no positions"));
     }
 
     private static List<Matrix3d> compileAllowedTransformations() {
@@ -87,19 +97,6 @@ public class PlacedBreweryStructure<H extends StructureHolder<H>> implements Mul
                 .toArray()
         );
         return matrix3d;
-    }
-
-    private int comparePositions(BreweryLocation breweryLocation, BreweryLocation breweryLocation1) {
-        if (breweryLocation.y() > breweryLocation1.y()) {
-            return -1;
-        }
-        if (breweryLocation.x() > breweryLocation1.x()) {
-            return -1;
-        }
-        if (breweryLocation.z() > breweryLocation1.z()) {
-            return -1;
-        }
-        return 0;
     }
 
     public BreweryStructure getStructure() {

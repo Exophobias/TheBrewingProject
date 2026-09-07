@@ -14,7 +14,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.List;
 
-public class StructureMatchers extends OkaeriConfig {
+public class StructureMatchers extends dev.jsinco.brewery.configuration.FileClosedConfig {
 
     @CustomKey("structure-matchers")
     List<StructureMatcherDefinition> structureMatcherDefinitions = List.of();

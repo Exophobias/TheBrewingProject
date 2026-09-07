@@ -18,7 +18,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
-public class BarrelTypeDefinitions extends OkaeriConfig {
+public class BarrelTypeDefinitions extends dev.jsinco.brewery.configuration.FileClosedConfig {
 
     @CustomKey("barrel-types")
     private List<BarrelTypeDefinition> barrelTypes = List.of();

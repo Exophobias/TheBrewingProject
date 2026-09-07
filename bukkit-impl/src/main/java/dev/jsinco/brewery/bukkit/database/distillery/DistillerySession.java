@@ -8,7 +8,6 @@ import dev.jsinco.brewery.database.Session;
 import dev.jsinco.brewery.database.UncheckedPersistenceException;
 
 import java.util.List;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 public interface DistillerySession extends Session<DistillerySession> {
@@ -33,8 +32,6 @@ public interface DistillerySession extends Session<DistillerySession> {
     CompletableFuture<Void> insertDistillery(BukkitDistillery distillery);
 
     CompletableFuture<Void> removeDistillery(BukkitDistillery distillery);
-
-    CompletableFuture<List<BukkitDistillery>> findDistilleries(UUID worldUuid);
 
     CompletableFuture<Void> updateDistillery(BukkitDistillery newDistillery);
 

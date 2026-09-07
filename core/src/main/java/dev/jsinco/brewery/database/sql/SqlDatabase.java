@@ -11,6 +11,8 @@ import org.jspecify.annotations.NonNull;
 
 import java.io.File;
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -26,6 +28,8 @@ public class SqlDatabase implements PersistenceHandler {
     private final DatabaseDriver driver;
     private HikariDataSource hikariDataSource;
     private final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
+    private final DatabaseWorkTracker work = new DatabaseWorkTracker(executor);
+    private CompletableFuture<Void> closing;
 
     public SqlDatabase(DatabaseDriver databaseDriver) {
         this.driver = databaseDriver;
@@ -109,13 +113,49 @@ public class SqlDatabase implements PersistenceHandler {
 
     @Override
     public CompletableFuture<Void> flush() {
-        return CompletableFuture.runAsync(() -> {
-        }, executor);
+        return work.drain();
+    }
+
+    /** Rejects new session operations, drains admitted work, then releases the pool and worker. */
+    public synchronized CompletableFuture<Void> close() {
+        if (closing == null) {
+            closing = work.closeAdmission().thenRun(() -> {
+                try {
+                    if (hikariDataSource != null) hikariDataSource.close();
+                } finally {
+                    executor.shutdown();
+                }
+            });
+        }
+        return closing;
     }
 
     @Override
-    public <T extends Session<T>> T startSession(SessionType<T> sessionType) throws PersistenceException {
-        return sessionType.retrieve(executor, this);
+    @SuppressWarnings("unchecked")
+    public synchronized <T extends Session<T>> T startSession(SessionType<T> sessionType) throws PersistenceException {
+        if (closing != null) throw new PersistenceException(new IllegalStateException("Database is closing"));
+        T session = sessionType.retrieve(work, this);
+        // Session interfaces expose their complete persistence future. Tracking that result covers
+        // dependency waits before a first SQL task exists, not just currently queued executor work.
+        return (T) Proxy.newProxyInstance(session.getClass().getClassLoader(), session.getClass().getInterfaces(),
+                (proxy, method, arguments) -> {
+                    if (CompletableFuture.class.isAssignableFrom(method.getReturnType())) {
+                        return work.admit(() -> {
+                            try {
+                                return (CompletableFuture<?>) method.invoke(session, arguments);
+                            } catch (InvocationTargetException failure) {
+                                return CompletableFuture.failedFuture(failure.getCause());
+                            } catch (ReflectiveOperationException failure) {
+                                return CompletableFuture.failedFuture(failure);
+                            }
+                        });
+                    }
+                    try {
+                        return method.invoke(session, arguments);
+                    } catch (InvocationTargetException failure) {
+                        throw failure.getCause();
+                    }
+                });
     }
 
     @Override

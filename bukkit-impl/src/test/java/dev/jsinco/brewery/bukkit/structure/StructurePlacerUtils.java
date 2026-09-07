@@ -13,6 +13,8 @@ import eu.okaeri.configs.ConfigManager;
 import eu.okaeri.configs.serdes.OkaeriSerdes;
 import eu.okaeri.configs.yaml.snakeyaml.YamlSnakeYamlConfigurer;
 import org.bukkit.Material;
+import org.bukkit.Bukkit;
+import org.bukkit.block.BlockType;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.data.Bisected;
 import org.bukkit.block.data.type.Fence;
@@ -24,10 +26,12 @@ import org.mockbukkit.mockbukkit.world.WorldMock;
 import java.io.IOException;
 import java.net.URISyntaxException;
 import java.net.URL;
+import java.lang.reflect.Proxy;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public class StructurePlacerUtils {
 
@@ -102,7 +106,24 @@ public class StructurePlacerUtils {
 
     public static List<StructureMatcher> matchers() {
         return List.of(
-                new StructureMatcher("test", null, Map.of(), Map.of())
+                new StructureMatcher("barrel_type_matcher", null, Map.of(
+                        BlockType.OAK_STAIRS, Set.of(propertyAwareType(Material.SPRUCE_STAIRS)),
+                        BlockType.OAK_WALL_SIGN, Set.of(propertyAwareType(Material.SPRUCE_WALL_SIGN))), Map.of())
         );
+    }
+
+    private static BlockType propertyAwareType(Material material) {
+        // MockBukkit 4.64 forwards a properties-only string to its full block-data parser.
+        // Supply the missing material here while retaining the production matcher's real
+        // transformation and property comparison paths.
+        BlockType delegate = material.asBlockType();
+        return (BlockType) Proxy.newProxyInstance(BlockType.class.getClassLoader(),
+                new Class<?>[]{BlockType.class}, (proxy, method, arguments) -> {
+                    if (method.getName().equals("createBlockData") && arguments != null
+                            && arguments.length == 1 && arguments[0] instanceof String properties) {
+                        return Bukkit.createBlockData(material.getKey() + properties);
+                    }
+                    return method.invoke(delegate, arguments);
+                });
     }
 }

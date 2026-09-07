@@ -12,7 +12,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.regex.Pattern;
 
-public class BreweryStructureConfig extends OkaeriConfig {
+public class BreweryStructureConfig extends dev.jsinco.brewery.configuration.FileClosedConfig {
 
     @CustomKey("schem_file")
     String schemFileName;

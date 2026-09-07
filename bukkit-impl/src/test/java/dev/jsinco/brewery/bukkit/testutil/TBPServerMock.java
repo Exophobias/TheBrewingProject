@@ -16,6 +16,12 @@ import java.util.function.Consumer;
 public class TBPServerMock extends ServerMock {
 
     @Override
+    public org.bukkit.packs.ResourcePack getServerResourcePack() {
+        // This fixture has no server resource pack; MockBukkit's default throws asynchronously.
+        return null;
+    }
+
+    @Override
     public @NonNull GlobalRegionScheduler getGlobalRegionScheduler() {
         return new GlobalRegionSchedulerMock();
     }

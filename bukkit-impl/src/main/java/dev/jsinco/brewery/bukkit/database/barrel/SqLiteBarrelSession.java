@@ -2,30 +2,20 @@ package dev.jsinco.brewery.bukkit.database.barrel;
 
 import com.google.gson.JsonParser;
 import dev.jsinco.brewery.api.brew.Brew;
-import dev.jsinco.brewery.api.breweries.BarrelType;
 import dev.jsinco.brewery.api.ingredient.ResolvedIngredientManager;
-import dev.jsinco.brewery.api.util.BreweryKey;
-import dev.jsinco.brewery.api.util.BreweryRegistry;
-import dev.jsinco.brewery.api.util.Logger;
 import dev.jsinco.brewery.api.util.Pair;
 import dev.jsinco.brewery.api.vector.BreweryLocation;
 import dev.jsinco.brewery.brew.BrewImpl;
-import dev.jsinco.brewery.bukkit.TheBrewingProject;
 import dev.jsinco.brewery.bukkit.api.BukkitAdapter;
-import dev.jsinco.brewery.bukkit.breweries.BrewInventoryImpl;
 import dev.jsinco.brewery.bukkit.breweries.barrel.BukkitBarrel;
-import dev.jsinco.brewery.bukkit.structure.BreweryStructure;
 import dev.jsinco.brewery.bukkit.structure.PlacedBreweryStructure;
 import dev.jsinco.brewery.database.PersistenceException;
 import dev.jsinco.brewery.database.PersistenceSupplier;
 import dev.jsinco.brewery.database.UncheckedPersistenceException;
 import dev.jsinco.brewery.database.sql.SqlStatements;
 import dev.jsinco.brewery.util.DecoderEncoder;
-import dev.jsinco.brewery.util.FutureUtil;
-import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.inventory.ItemStack;
-import org.joml.Matrix3d;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -33,7 +23,6 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
@@ -119,49 +108,64 @@ public record SqLiteBarrelSession(Executor executor, PersistenceSupplier<Connect
             } catch (SQLException e) {
                 throw new UncheckedPersistenceException(e);
             }
-        });
+        }, executor);
     }
 
     @Override
     public CompletableFuture<Void> insertBarrel(BukkitBarrel barrel) {
-        PlacedBreweryStructure<BukkitBarrel> placedStructure = barrel.getStructure();
-        BreweryStructure structure = placedStructure.getStructure();
-        Location origin = placedStructure.getWorldOrigin();
-        UUID worldUuid = barrel.getWorld().getUID();
-        Location signLocation = barrel.getUniqueLocation();
-        CompletableFuture<Void> completed = new CompletableFuture<>();
-        execute(() -> {
-            try (Connection connection = connectionSupplier.getUnchecked(); PreparedStatement preparedStatement = connection.prepareStatement(BARREL_STATEMENTS.get(SqlStatements.Type.INSERT))) {
-                preparedStatement.setInt(1, origin.getBlockX());
-                preparedStatement.setInt(2, origin.getBlockY());
-                preparedStatement.setInt(3, origin.getBlockZ());
-                preparedStatement.setInt(4, signLocation.getBlockX());
-                preparedStatement.setInt(5, signLocation.getBlockY());
-                preparedStatement.setInt(6, signLocation.getBlockZ());
-                preparedStatement.setBytes(7, DecoderEncoder.asBytes(worldUuid));
-                preparedStatement.setString(8, DecoderEncoder.serializeTransformation(placedStructure.getTransformation()));
-                preparedStatement.setString(9, structure.getName());
-                preparedStatement.setString(10, barrel.getType().key().toString());
-                preparedStatement.setInt(11, barrel.getSize());
-                preparedStatement.execute();
-            } catch (SQLException e) {
-                throw new PersistenceException(e);
+        PlacedBreweryStructure<BukkitBarrel> structure = barrel.getStructure();
+        BreweryLocation origin = BukkitAdapter.toBreweryLocation(structure.getWorldOrigin());
+        BreweryLocation unique = BukkitAdapter.toBreweryLocation(barrel.getUniqueLocation());
+        String transformation = DecoderEncoder.serializeTransformation(structure.getTransformation());
+        String format = structure.getStructure().getName();
+        String type = barrel.getType().key().toString();
+        int size = barrel.getSize();
+        List<Pair<Brew, Integer>> brews = List.copyOf(barrel.getBrews());
+        return ingredientManagerFuture.thenAcceptAsync(ingredients -> {
+            try (Connection connection = connectionSupplier.getUnchecked()) {
+                connection.setAutoCommit(false);
+                try {
+                    try (PreparedStatement statement = connection.prepareStatement(BARREL_STATEMENTS.get(SqlStatements.Type.INSERT))) {
+                        statement.setInt(1, origin.x());
+                        statement.setInt(2, origin.y());
+                        statement.setInt(3, origin.z());
+                        statement.setInt(4, unique.x());
+                        statement.setInt(5, unique.y());
+                        statement.setInt(6, unique.z());
+                        statement.setBytes(7, DecoderEncoder.asBytes(unique.worldUuid()));
+                        statement.setString(8, transformation);
+                        statement.setString(9, format);
+                        statement.setString(10, type);
+                        statement.setInt(11, size);
+                        statement.executeUpdate();
+                    }
+                    for (Pair<Brew, Integer> brew : brews) {
+                        try (PreparedStatement statement = connection.prepareStatement(BARREL_BREW_STATEMENTS.get(SqlStatements.Type.INSERT))) {
+                            statement.setInt(1, unique.x());
+                            statement.setInt(2, unique.y());
+                            statement.setInt(3, unique.z());
+                            statement.setBytes(4, DecoderEncoder.asBytes(unique.worldUuid()));
+                            statement.setInt(5, brew.second());
+                            statement.setString(6, BrewImpl.SERIALIZER.serialize(brew.first(), ingredients).toString());
+                            statement.executeUpdate();
+                        }
+                    }
+                    connection.commit();
+                } catch (SQLException | RuntimeException failure) {
+                    try { connection.rollback(); } catch (SQLException rollback) { failure.addSuppressed(rollback); }
+                    throw failure;
+                }
+            } catch (SQLException failure) {
+                throw new UncheckedPersistenceException(failure);
             }
-        }).thenRunAsync(() -> {
-            List<CompletableFuture<Void>> completableFutures = new ArrayList<>();
-            for (Pair<Brew, Integer> brew : barrel.getBrews()) {
-                completableFutures.add(insertBrew(BukkitAdapter.toBreweryLocation(signLocation), brew.second(), brew.first()));
-            }
-            FutureUtil.mergeFutures(completableFutures).thenRun(() -> completed.complete(null));
         }, executor);
-        return completed;
     }
 
     @Override
     public CompletableFuture<Void> removeBarrel(BukkitBarrel barrel) {
+        UUID worldUuid = barrel.getWorld().getUID();
+        Location signLocation = barrel.getUniqueLocation();
         return execute(() -> {
-            UUID worldUuid = barrel.getWorld().getUID();
-            Location signLocation = barrel.getUniqueLocation();
             try (Connection connection = connectionSupplier.getUnchecked(); PreparedStatement preparedStatement = connection.prepareStatement(BARREL_STATEMENTS.get(SqlStatements.Type.DELETE))) {
                 preparedStatement.setInt(1, signLocation.getBlockX());
                 preparedStatement.setInt(2, signLocation.getBlockY());
@@ -174,52 +178,5 @@ public record SqLiteBarrelSession(Executor executor, PersistenceSupplier<Connect
         });
     }
 
-    @Override
-    public CompletableFuture<List<BukkitBarrel>> findBarrels(UUID worldUuid) {
-        CompletableFuture<List<BukkitBarrel>> completed = new CompletableFuture<>();
-        fetch(() -> {
-            List<BukkitBarrel> output = new ArrayList<>();
-            try (Connection connection = connectionSupplier.getUnchecked(); PreparedStatement preparedStatement = connection.prepareStatement(BARREL_STATEMENTS.get(SqlStatements.Type.FIND))) {
-                preparedStatement.setBytes(1, DecoderEncoder.asBytes(worldUuid));
-                ResultSet resultSet = preparedStatement.executeQuery();
-                while (resultSet.next()) {
-                    Location worldOrigin = new Location(Bukkit.getWorld(worldUuid), resultSet.getInt("origin_x"), resultSet.getInt("origin_y"), resultSet.getInt("origin_z"));
-                    Location uniqueLocation = new Location(Bukkit.getWorld(worldUuid), resultSet.getInt("unique_x"), resultSet.getInt("unique_y"), resultSet.getInt("unique_z"));
-                    Matrix3d transform = DecoderEncoder.deserializeTransformation(resultSet.getString("transformation"));
-                    String format = resultSet.getString("format");
-                    BarrelType type = BreweryRegistry.BARREL_TYPE.get(BreweryKey.parse(resultSet.getString("barrel_type")));
-                    if (type == null) {
-                        Logger.logErr("Unknown barrel type '" + resultSet.getString("barrel_type") + "' for structure at: " + uniqueLocation);
-                        continue;
-                    }
-                    int size = resultSet.getInt("size");
 
-                    Optional<BreweryStructure> breweryStructureOptional = TheBrewingProject.getInstance().getStructureRegistry().getStructure(format);
-                    if (breweryStructureOptional.isEmpty()) {
-                        Logger.logErr("Could not find format '" + format + "' skipping barrel at: " + uniqueLocation);
-                        continue;
-                    }
-                    PlacedBreweryStructure<BukkitBarrel> structure = new PlacedBreweryStructure<>(breweryStructureOptional.get(), transform, worldOrigin);
-                    BukkitBarrel barrel = new BukkitBarrel(uniqueLocation, structure, size, type);
-                    structure.setHolder(barrel);
-                    output.add(barrel);
-                }
-            } catch (SQLException e) {
-                throw new PersistenceException(e);
-            }
-            return output;
-        }).thenAcceptAsync(barrels -> {
-            List<CompletableFuture<Void>> barrelBrewsLoadedFuture = new ArrayList<>();
-            for (BukkitBarrel barrel : barrels) {
-                BrewInventoryImpl barrelInventory = barrel.getInventory();
-                barrelBrewsLoadedFuture.add(findBrews(BukkitAdapter.toBreweryLocation(barrel.getUniqueLocation()))
-                        .thenAccept(brews ->
-                                brews.forEach(result -> barrelInventory.set(result.brew(), result.position()))
-                        ));
-            }
-            FutureUtil.mergeFutures(barrelBrewsLoadedFuture)
-                    .thenRun(() -> completed.complete(barrels));
-        }, executor);
-        return completed;
-    }
 }

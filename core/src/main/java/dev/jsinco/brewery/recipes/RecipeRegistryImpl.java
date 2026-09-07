@@ -31,15 +31,43 @@ public class RecipeRegistryImpl<I> implements RecipeRegistry<I> {
     private final Map<String, Recipe<I>> recipes = Collections.synchronizedMap(new LinkedHashMap<>());
     private final Map<String, DefaultRecipe<I>> defaultRecipes = Collections.synchronizedMap(new LinkedHashMap<>());
     private final Map<BaseIngredient, Set<Recipe<I>>> baseIngredientToRecipes = Collections.synchronizedMap(new HashMap<>());
+    private long loadGeneration;
+
+    /** Starts an isolated load while the previous complete recipe set remains readable. */
+    public synchronized long beginLoad() {
+        return ++loadGeneration;
+    }
+
+    public synchronized void invalidatePendingLoads() {
+        ++loadGeneration;
+    }
+
+    /** Publishes recipes and defaults together, only if this load is still current. */
+    public synchronized boolean publishLoad(long generation, Collection<? extends Recipe<I>> loaded,
+                                            Map<String, DefaultRecipe<I>> defaults) {
+        if (generation != loadGeneration) {
+            return false;
+        }
+        RecipeRegistryImpl<I> candidate = new RecipeRegistryImpl<>();
+        loaded.forEach(candidate::registerRecipe);
+        defaults.forEach(candidate::registerDefaultRecipe);
+        recipes.clear();
+        recipes.putAll(candidate.recipes);
+        defaultRecipes.clear();
+        defaultRecipes.putAll(candidate.defaultRecipes);
+        baseIngredientToRecipes.clear();
+        baseIngredientToRecipes.putAll(candidate.baseIngredientToRecipes);
+        return true;
+    }
 
 
-    public void registerRecipes(@NonNull Map<String, Recipe<I>> recipes) {
+    public synchronized void registerRecipes(@NonNull Map<String, Recipe<I>> recipes) {
         this.clear();
         recipes.forEach((ignored, recipe) -> registerRecipe(recipe));
     }
 
     @Override
-    public Optional<Recipe<I>> getRecipe(@NonNull String recipeName) {
+    public synchronized Optional<Recipe<I>> getRecipe(@NonNull String recipeName) {
         Preconditions.checkNotNull(recipeName);
 
         // Try case-sensitive first
@@ -59,12 +87,12 @@ public class RecipeRegistryImpl<I> implements RecipeRegistry<I> {
     }
 
     @Override
-    public Collection<Recipe<I>> getRecipes() {
-        return recipes.values();
+    public synchronized Collection<Recipe<I>> getRecipes() {
+        return List.copyOf(recipes.values());
     }
 
     @Override
-    public Collection<Recipe<I>> possibleRecipes(List<BrewingStep> steps) {
+    public synchronized Collection<Recipe<I>> possibleRecipes(List<BrewingStep> steps) {
         Set<Recipe<I>> recipes = null;
         for (BaseIngredient baseIngredient : BrewUtil.getRecipeIngredients(steps)) {
             if (recipes == null) {
@@ -95,7 +123,11 @@ public class RecipeRegistryImpl<I> implements RecipeRegistry<I> {
     }
 
     @Override
-    public void registerRecipe(Recipe<I> recipe) {
+    public synchronized void registerRecipe(Recipe<I> recipe) {
+        Recipe<I> previous = recipes.get(recipe.getRecipeName());
+        if (previous != null) {
+            unRegisterRecipe(previous);
+        }
         recipes.put(recipe.getRecipeName(), recipe);
         for (BaseIngredient recipeIngredient : BrewUtil.getRecipeIngredients(recipe)) {
             baseIngredientToRecipes.computeIfAbsent(recipeIngredient, ignored -> Collections.newSetFromMap(new ConcurrentHashMap<>()))
@@ -104,7 +136,10 @@ public class RecipeRegistryImpl<I> implements RecipeRegistry<I> {
     }
 
     @Override
-    public void unRegisterRecipe(Recipe<I> recipe) {
+    public synchronized void unRegisterRecipe(Recipe<I> recipe) {
+        if (recipes.get(recipe.getRecipeName()) != recipe) {
+            return;
+        }
         recipes.remove(recipe.getRecipeName());
         for (BaseIngredient baseIngredient : BrewUtil.getRecipeIngredients(recipe)) {
             Set<Recipe<I>> ingredientRecipes = baseIngredientToRecipes.get(baseIngredient);
@@ -119,18 +154,18 @@ public class RecipeRegistryImpl<I> implements RecipeRegistry<I> {
     }
 
     @Override
-    public Optional<DefaultRecipe<I>> getDefaultRecipe(@NonNull String recipeName) {
+    public synchronized Optional<DefaultRecipe<I>> getDefaultRecipe(@NonNull String recipeName) {
         Preconditions.checkNotNull(recipeName);
         return Optional.ofNullable(defaultRecipes.get(recipeName));
     }
 
     @Override
-    public Collection<DefaultRecipe<I>> getDefaultRecipes() {
-        return defaultRecipes.values();
+    public synchronized Collection<DefaultRecipe<I>> getDefaultRecipes() {
+        return List.copyOf(defaultRecipes.values());
     }
 
     @Override
-    public void registerDefaultRecipe(String name, DefaultRecipe<I> recipe) {
+    public synchronized void registerDefaultRecipe(String name, DefaultRecipe<I> recipe) {
         if (recipe == null) {
             Logger.logWarn("Default recipe was null, ignoring: " + name);
             return;
@@ -139,22 +174,23 @@ public class RecipeRegistryImpl<I> implements RecipeRegistry<I> {
     }
 
     @Override
-    public void unRegisterDefaultRecipe(String name) {
+    public synchronized void unRegisterDefaultRecipe(String name) {
         defaultRecipes.remove(name);
     }
 
     @Override
-    public boolean isRegisteredIngredient(Ingredient ingredient) {
+    public synchronized boolean isRegisteredIngredient(Ingredient ingredient) {
         return ingredient.findMatch(baseIngredientToRecipes.keySet())
                 .isPresent();
     }
 
     @Override
-    public Set<BaseIngredient> registeredIngredients() {
-        return baseIngredientToRecipes.keySet();
+    public synchronized Set<BaseIngredient> registeredIngredients() {
+        return Set.copyOf(baseIngredientToRecipes.keySet());
     }
 
-    public void clear() {
+    public synchronized void clear() {
+        invalidatePendingLoads();
         recipes.clear();
         defaultRecipes.clear();
         baseIngredientToRecipes.clear();

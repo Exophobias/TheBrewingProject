@@ -6,7 +6,6 @@ import dev.jsinco.brewery.bukkit.breweries.barrel.BukkitBarrel;
 import dev.jsinco.brewery.database.Session;
 
 import java.util.List;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 public interface BarrelSession extends Session<BarrelSession> {
@@ -22,8 +21,6 @@ public interface BarrelSession extends Session<BarrelSession> {
     CompletableFuture<Void> insertBarrel(BukkitBarrel barrel);
 
     CompletableFuture<Void> removeBarrel(BukkitBarrel barrel);
-
-    CompletableFuture<List<BukkitBarrel>> findBarrels(UUID worldUuid);
 
     record BrewLookupResult(Brew brew, int position) {
     }

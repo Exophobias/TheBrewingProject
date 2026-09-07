@@ -25,6 +25,9 @@ public final class SessionTypes {
     public static final SessionType<CauldronSession> CAULDRON_SESSION_TYPE = SessionTypes::newCauldronSession;
     public static final SessionType<MiscSession> MISC_SESSION_TYPE = SessionTypes::newMiscSession;
     public static final SessionType<DrunkenStateSession> DRUNK_STATE_SESSION_TYPE = SessionTypes::newDrunkStateSession;
+    public static final SessionType<dev.jsinco.brewery.bukkit.database.hydration.WorldHydrationSession> WORLD_HYDRATION_SESSION_TYPE =
+            (executor, handler) -> new dev.jsinco.brewery.bukkit.database.hydration.SqLiteWorldHydrationSession(
+                    executor, ((SqlDatabase) handler)::getConnection);
 
 
     private static BarrelSession newBarrelSession(Executor executor, PersistenceHandler handler) throws PersistenceException {

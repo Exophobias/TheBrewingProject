@@ -1,11 +1,6 @@
 package dev.jsinco.brewery.bukkit.database.cauldron;
 
-import com.google.gson.JsonParser;
-import dev.jsinco.brewery.api.brew.Brew;
-import dev.jsinco.brewery.api.brew.BrewingStep;
-import dev.jsinco.brewery.api.breweries.CauldronType;
 import dev.jsinco.brewery.api.ingredient.ResolvedIngredientManager;
-import dev.jsinco.brewery.api.util.BreweryKey;
 import dev.jsinco.brewery.api.vector.BreweryLocation;
 import dev.jsinco.brewery.brew.BrewImpl;
 import dev.jsinco.brewery.bukkit.breweries.BukkitCauldron;
@@ -18,12 +13,7 @@ import org.bukkit.inventory.ItemStack;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 
@@ -83,43 +73,5 @@ public record SqLiteCauldronSession(Executor executor, PersistenceSupplier<Conne
         });
     }
 
-    @Override
-    public CompletableFuture<List<BukkitCauldron>> findCauldrons(UUID worldUuid) {
-        return ingredientManagerFuture.thenApplyAsync(ingredientManager -> {
-            try (Connection connection = connectionSupplier.getUnchecked(); PreparedStatement preparedStatement = connection.prepareStatement(STATEMENTS.get(SqlStatements.Type.FIND))) {
-                preparedStatement.setBytes(1, DecoderEncoder.asBytes(worldUuid));
-                ResultSet resultSet = preparedStatement.executeQuery();
-                List<BukkitCauldron> cauldrons = new ArrayList<>();
-                while (resultSet.next()) {
-                    int x = resultSet.getInt("cauldron_x");
-                    int y = resultSet.getInt("cauldron_y");
-                    int z = resultSet.getInt("cauldron_z");
-                    Brew brew = BrewImpl.SERIALIZER.deserialize(JsonParser.parseString(resultSet.getString("brew")), ingredientManager);
-                    String typeName = resultSet.getString("cauldron_type");
-                    CauldronType cauldronType;
-                    if (typeName != null) {
-                        BreweryKey typeKey = BreweryKey.parse(typeName);
-                        cauldronType = Arrays.stream(CauldronType.values()).filter(cauldronType1 -> cauldronType1.key().equals(typeKey))
-                                .findAny()
-                                .orElse(fromBrew(brew));
-                    } else {
-                        cauldronType = fromBrew(brew);
-                    }
-                    cauldrons.add(new BukkitCauldron(
-                            brew,
-                            new BreweryLocation(x, y, z, worldUuid),
-                            cauldronType
-                    ));
-                }
-                return cauldrons;
-            } catch (SQLException e) {
-                throw new UncheckedPersistenceException(e);
-            }
-        }, executor);
-    }
 
-    private CauldronType fromBrew(Brew brew) {
-        return brew.lastStep() instanceof BrewingStep.CauldronStep<?> cauldronStep ?
-                cauldronStep.cauldronType() : CauldronType.WATER;
-    }
 }

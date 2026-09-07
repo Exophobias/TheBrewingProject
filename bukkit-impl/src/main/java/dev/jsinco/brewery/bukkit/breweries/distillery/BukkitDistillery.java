@@ -1120,7 +1120,7 @@ public class BukkitDistillery implements Distillery<BukkitDistillery, ItemStack,
 
     @Override
     public CompletableFuture<Void> runLocally(Runnable action) {
-        return runLocally(
+        return TheBrewingProject.getInstance().getOwnerPublications().submit(
                 Bukkit.isOwnedByCurrentRegion(structure.getWorldOrigin()),
                 action,
                 scheduledAction -> Bukkit.getRegionScheduler().run(

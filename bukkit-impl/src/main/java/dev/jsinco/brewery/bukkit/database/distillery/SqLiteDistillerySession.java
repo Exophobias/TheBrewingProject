@@ -7,22 +7,15 @@ import dev.jsinco.brewery.api.ingredient.ResolvedIngredientManager;
 import dev.jsinco.brewery.api.util.Logger;
 import dev.jsinco.brewery.api.vector.BreweryLocation;
 import dev.jsinco.brewery.brew.BrewImpl;
-import dev.jsinco.brewery.bukkit.TheBrewingProject;
 import dev.jsinco.brewery.bukkit.api.BukkitAdapter;
-import dev.jsinco.brewery.bukkit.breweries.BrewInventoryImpl;
 import dev.jsinco.brewery.bukkit.breweries.distillery.BukkitDistillery;
-import dev.jsinco.brewery.bukkit.structure.BreweryStructure;
 import dev.jsinco.brewery.bukkit.structure.PlacedBreweryStructure;
 import dev.jsinco.brewery.database.PersistenceException;
 import dev.jsinco.brewery.database.PersistenceSupplier;
 import dev.jsinco.brewery.database.UncheckedPersistenceException;
 import dev.jsinco.brewery.database.sql.SqlStatements;
 import dev.jsinco.brewery.util.DecoderEncoder;
-import org.bukkit.Bukkit;
-import org.bukkit.Location;
-import org.bukkit.World;
 import org.bukkit.inventory.ItemStack;
-import org.joml.Matrix3d;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -34,9 +27,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.Set;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 
@@ -496,56 +487,6 @@ public record SqLiteDistillerySession(Executor executor, PersistenceSupplier<Con
                 throw new PersistenceException(e);
             }
         });
-    }
-
-    @Override
-    public CompletableFuture<List<BukkitDistillery>> findDistilleries(UUID worldUuid) {
-        CompletableFuture<List<BukkitDistillery>> distilleriesFuture = new CompletableFuture<>();
-        fetch(() -> {
-            List<BukkitDistillery> output = new ArrayList<>();
-            World world = Bukkit.getWorld(worldUuid);
-            try (Connection connection = connectionSupplier.getUnchecked(); PreparedStatement preparedStatement = connection.prepareStatement(DISTILLERY_STATEMENTS.get(SqlStatements.Type.FIND))) {
-                preparedStatement.setBytes(1, DecoderEncoder.asBytes(worldUuid));
-                ResultSet resultSet = preparedStatement.executeQuery();
-                while (resultSet.next()) {
-                    int originX = resultSet.getInt("origin_x");
-                    int originY = resultSet.getInt("origin_y");
-                    int originZ = resultSet.getInt("origin_z");
-                    Location structureOrigin = new Location(world, originX, originY, originZ);
-                    String structureName = resultSet.getString("format");
-                    Optional<BreweryStructure> breweryStructure = TheBrewingProject.getInstance().getStructureRegistry().getStructure(structureName);
-                    if (breweryStructure.isEmpty()) {
-                        Logger.logErr("Could not find format '" + structureName + "' skipping distillery at: " + structureOrigin);
-                        continue;
-                    }
-                    Matrix3d transformation = DecoderEncoder.deserializeTransformation(resultSet.getString("transformation"));
-                    PlacedBreweryStructure<BukkitDistillery> placedBreweryStructure = new PlacedBreweryStructure<>(breweryStructure.get(), transformation, structureOrigin);
-                    int startTime = resultSet.getInt("start_time");
-                    BukkitDistillery bukkitDistillery = new BukkitDistillery(placedBreweryStructure, startTime);
-                    placedBreweryStructure.setHolder(bukkitDistillery);
-                    output.add(bukkitDistillery);
-                }
-            } catch (SQLException e) {
-                throw new PersistenceException(e);
-            }
-            return output;
-        }).thenAccept(distilleries ->
-                insertBrews(distilleries).thenRun(() -> distilleriesFuture.complete(distilleries))
-        );
-        return distilleriesFuture;
-    }
-
-    private CompletableFuture<Void> insertBrews(List<BukkitDistillery> distilleries) {
-        List<CompletableFuture<Void>> brewsInsertedFutures = new ArrayList<>();
-        for (BukkitDistillery distillery : distilleries) {
-            brewsInsertedFutures.add(findBrews(distillery.getStructure().getUnique())
-                    .thenAccept(brews -> brews.forEach(brew -> {
-                        BrewInventoryImpl inventory = brew.distillateInventoryType()
-                                ? distillery.getDistillate() : distillery.getMixture();
-                        inventory.set(brew.brew(), brew.position());
-                    })));
-        }
-        return CompletableFuture.allOf(brewsInsertedFutures.toArray(CompletableFuture<?>[]::new));
     }
 
     @Override

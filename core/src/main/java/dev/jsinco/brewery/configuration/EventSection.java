@@ -46,7 +46,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 
-public class EventSection extends OkaeriConfig {
+public class EventSection extends FileClosedConfig {
 
     @CustomKey("kick-event")
     private KickEventSection kickEvent = new KickEventSection();

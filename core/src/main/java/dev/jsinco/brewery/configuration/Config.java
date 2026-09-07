@@ -21,7 +21,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
-public class Config extends OkaeriConfig implements Configuration {
+public class Config extends FileClosedConfig implements Configuration {
 
     @Comment("Config version. Don't change this")
     @CustomKey("config-version")

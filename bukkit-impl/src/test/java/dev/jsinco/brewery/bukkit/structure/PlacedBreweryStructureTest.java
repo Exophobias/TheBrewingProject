@@ -1,5 +1,6 @@
 package dev.jsinco.brewery.bukkit.structure;
 
+import dev.jsinco.brewery.api.vector.BreweryLocation;
 import org.bukkit.Location;
 import org.bukkit.util.BlockVector;
 import org.junit.jupiter.api.BeforeEach;
@@ -20,7 +21,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Stream;
+import java.util.stream.Collectors;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -40,9 +44,11 @@ class PlacedBreweryStructureTest {
     void findValid_Any_insideMatch(BlockVector blockVector) throws IOException, URISyntaxException {
         BreweryStructure breweryStructure = StructurePlacerUtils.matchingStructure();
         StructurePlacerUtils.constructSmallOakBarrel(worldMock);
-        assertTrue(PlacedBreweryStructure.findValid(breweryStructure,
+        var found = PlacedBreweryStructure.findValid(breweryStructure,
                 new Location(worldMock, blockVector.getBlockX(), blockVector.getBlockY(), blockVector.getBlockZ())
-        ).isPresent());
+        ).orElseThrow().first();
+        assertEquals(new BreweryLocation(-2, 2, 4, worldMock.getUID()), found.getUnique(),
+                "The same footprint must have one key regardless of the block used to find it");
     }
 
     @ParameterizedTest
@@ -57,7 +63,36 @@ class PlacedBreweryStructureTest {
     }
 
     @Test
-    void positions() {
+    void positions() throws IOException, URISyntaxException {
+        var placed = placedBarrel();
+        assertEquals(getSmallBarrelBlocks(), placed.positions().stream()
+                .map(position -> new BlockVector(position.x(), position.y(), position.z()))
+                .collect(Collectors.toSet()));
+    }
+
+    @Test
+    void existingDatabaseKeyRemainsExactEvenWhenItDiffersFromNewOrdering()
+            throws IOException, URISyntaxException {
+        var placed = placedBarrel();
+        BreweryLocation legacyKey = new BreweryLocation(-3, 1, 1, worldMock.getUID());
+        var restored = new PlacedBreweryStructure<>(placed.getStructure(),
+                placed.getTransformation(), placed.getWorldOrigin(), legacyKey);
+        assertEquals(legacyKey, restored.getUnique());
+        assertEquals(placed.positions(), restored.positions());
+    }
+
+    @Test
+    void databaseKeyOutsideFootprintIsRejected() throws IOException, URISyntaxException {
+        var placed = placedBarrel();
+        assertThrows(IllegalArgumentException.class, () -> new PlacedBreweryStructure<>(
+                placed.getStructure(), placed.getTransformation(), placed.getWorldOrigin(),
+                new BreweryLocation(100, 100, 100, worldMock.getUID())));
+    }
+
+    private PlacedBreweryStructure<?> placedBarrel() throws IOException, URISyntaxException {
+        StructurePlacerUtils.constructSmallOakBarrel(worldMock);
+        return PlacedBreweryStructure.findValid(StructurePlacerUtils.matchingStructure(),
+                new Location(worldMock, -3, 1, 1)).orElseThrow().first();
     }
 
     static Stream<Arguments> getSchemFormatPaths() {

@@ -128,8 +128,7 @@ public record SqLiteDrunkStateSession(Executor executor,
 
     @Override
     public CompletableFuture<List<StateLookupResult>> retrieveAllStates() {
-        CompletableFuture<List<StateLookupResult>> completed = new CompletableFuture<>();
-        fetch(() -> {
+        return fetch(() -> {
             List<StateLookupResult> drunks = new ArrayList<>();
             try (Connection connection = connectionSupplier.getUnchecked(); PreparedStatement preparedStatement = connection.prepareStatement(STATE_STATEMENTS.get(SqlStatements.Type.SELECT_ALL))) {
                 ResultSet resultSet = preparedStatement.executeQuery();
@@ -146,7 +145,7 @@ public record SqLiteDrunkStateSession(Executor executor,
                 throw new PersistenceException(e);
             }
             return drunks;
-        }).thenAcceptAsync(states -> {
+        }).thenCompose(states -> {
             List<CompletableFuture<StateLookupResult>> outputFutures = new ArrayList<>();
             for (StateLookupResult state : states) {
                 outputFutures.add(fetchDrunkenModifiers(state.playerUuid())
@@ -157,9 +156,7 @@ public record SqLiteDrunkStateSession(Executor executor,
                                 state.playerUuid()
                         )));
             }
-            FutureUtil.mergeFutures(outputFutures)
-                    .thenAccept(completed::complete);
-        }, executor);
-        return completed;
+            return FutureUtil.mergeFutures(outputFutures);
+        });
     }
 }

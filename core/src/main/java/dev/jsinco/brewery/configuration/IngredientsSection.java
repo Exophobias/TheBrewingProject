@@ -32,7 +32,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.function.Function;
 import java.util.regex.Pattern;
 
-public class IngredientsSection extends OkaeriConfig {
+public class IngredientsSection extends FileClosedConfig {
 
     @CustomKey("ingredient-groups")
     @Comment({

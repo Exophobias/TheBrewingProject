@@ -4,7 +4,6 @@ import dev.jsinco.brewery.api.util.Logger;
 import dev.jsinco.brewery.api.structure.StructureType;
 import dev.jsinco.brewery.bukkit.TheBrewingProject;
 import dev.jsinco.brewery.bukkit.breweries.BreweryRegistry;
-import dev.jsinco.brewery.bukkit.breweries.barrel.BukkitBarrel;
 import dev.jsinco.brewery.bukkit.breweries.distillery.BukkitDistillery;
 import dev.jsinco.brewery.bukkit.database.SessionTypes;
 import dev.jsinco.brewery.database.PersistenceException;
@@ -18,20 +17,36 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.world.WorldLoadEvent;
 import org.bukkit.event.world.WorldUnloadEvent;
 
+import java.util.UUID;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+
 public class WorldEventListener implements Listener {
 
     private final SqlDatabase database;
     private final PlacedStructureRegistryImpl placedStructureRegistry;
     private final BreweryRegistry registry;
+    private final WorldHydrationLifecycle hydration;
 
     public WorldEventListener(SqlDatabase database, PlacedStructureRegistryImpl placedStructureRegistry, BreweryRegistry registry) {
         this.database = database;
         this.placedStructureRegistry = placedStructureRegistry;
         this.registry = registry;
+        this.hydration = new WorldHydrationLifecycle(TheBrewingProject.getInstance().getAtomicMutationGate());
     }
 
-    public void init() {
-        Bukkit.getServer().getWorlds().forEach(this::loadWorld);
+    public CompletableFuture<Void> init() {
+        return CompletableFuture.allOf(Bukkit.getServer().getWorlds().stream()
+                .map(this::loadWorld).toArray(CompletableFuture[]::new));
+    }
+
+    /** Called before reload clears any registry or begins draining the database. */
+    public void invalidateAll() {
+        hydration.invalidateAll();
+    }
+
+    public void stop() {
+        hydration.stop();
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -59,6 +74,7 @@ public class WorldEventListener implements Listener {
             return;
         }
         try {
+            hydration.invalidate(worldUuid);
             placedStructureRegistry.unloadWorld(worldUuid);
             registry.unloadWorld(worldUuid);
         } finally {
@@ -75,33 +91,41 @@ public class WorldEventListener implements Listener {
                 .anyMatch(BukkitDistillery::isAtomicMovePending);
     }
 
-    private void loadWorld(World world) {
+    public CompletableFuture<Void> loadWorld(World world) {
+        UUID worldId = world.getUID();
+        var load = hydration.begin(worldId);
+        load.result().whenComplete((ignored, failure) -> {
+            if (failure != null && !(failure instanceof CancellationException)) {
+                Logger.logErr("Could not hydrate brewery holders for " + worldId
+                        + "; atomic mutations stay unavailable until reload or world unload");
+                Logger.logErr(failure);
+            }
+        });
         try {
-            database.startSession(SessionTypes.BARREL_SESSION_TYPE).findBarrels(world.getUID())
-                    .thenAccept(barrels -> {
-                        if (Bukkit.getWorld(world.getUID()) != world) {
+            var plugin = TheBrewingProject.getInstance();
+            database.startSession(SessionTypes.WORLD_HYDRATION_SESSION_TYPE).readWorld(worldId)
+                    .thenCompose(snapshot -> plugin.getResolvedIngredientManager().thenApply(ingredients -> (Runnable) () -> {
+                        if (Bukkit.getWorld(worldId) != world) {
+                            hydration.invalidate(worldId);
                             return;
                         }
-                        placedStructureRegistry.registerStructures(barrels.stream().map(BukkitBarrel::getStructure).toList());
-                        registry.registerInventories(barrels);
-                    }).exceptionally(Logger::logAndTrackErr);
-            database.startSession(SessionTypes.CAULDRON_SESSION_TYPE).findCauldrons(world.getUID())
-                    .thenAccept(cauldrons -> {
-                        if (Bukkit.getWorld(world.getUID()) != world) {
-                            return;
+                        hydration.publish(load, () -> WorldBreweryHydrator.publish(world, snapshot, ingredients,
+                                placedStructureRegistry, registry));
+                    }))
+                    .thenAccept(publication -> {
+                        if (hydration.isCurrent(load)) {
+                            Bukkit.getGlobalRegionScheduler().execute(plugin, () -> {
+                                // Check before touching even the World: unload MONITOR still exposes it.
+                                if (hydration.isCurrent(load)) publication.run();
+                            });
                         }
-                        cauldrons.forEach(registry::addActiveSinglePositionStructure);
-                    }).exceptionally(Logger::logAndTrackErr);
-            database.startSession(SessionTypes.DISTILLERY_SESSION_TYPE).findDistilleries(world.getUID())
-                    .thenAccept(distilleries -> {
-                        if (Bukkit.getWorld(world.getUID()) != world) {
-                            return;
-                        }
-                        placedStructureRegistry.registerStructures(distilleries.stream().map(BukkitDistillery::getStructure).toList());
-                        registry.registerInventories(distilleries);
-                    }).exceptionally(Logger::logAndTrackErr);
-        } catch (PersistenceException e) {
-            Logger.logErr(e);
+                    })
+                    .whenComplete((ignored, failure) -> {
+                        if (failure != null) hydration.fail(load, failure);
+                    });
+        } catch (PersistenceException | RuntimeException failure) {
+            hydration.fail(load, failure);
         }
+        return load.result();
     }
 }

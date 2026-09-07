@@ -2,7 +2,7 @@
   "schem_file": "test_barrel.schem",
   "meta": {
     "inventory_size": 9,
-    "use_barrel_substitution": true,
+    "block_matcher": "barrel_type_matcher",
     "type": "barrel"
   }
 }
