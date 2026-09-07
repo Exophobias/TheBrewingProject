@@ -113,6 +113,11 @@ public class BukkitCauldron implements Cauldron {
     @Override
     public void tick() {
         BukkitAdapter.scheduleIfLoaded(location, TheBrewingProject.getInstance(), bukkitLocation -> {
+            // A tick captured before removal/reload must not publish old visuals, inspect a
+            // replacement's geometry, or queue a coordinate-only delete against its new row.
+            if (!ListenerUtil.isCurrent(this)) {
+                return;
+            }
             if (!Tag.CAULDRONS.isTagged(bukkitLocation.getBlock().getType()) || getBlock().getType() == Material.CAULDRON) {
                 ListenerUtil.removeActiveSinglePositionStructure(this);
                 return;

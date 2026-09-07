@@ -346,22 +346,29 @@ public class BlockEventListener implements Listener {
 
             // DistilleryDestroyEvent is intentionally mutable, so a later listener can undo the
             // initial cancellation used for an atomic reservation. Authorization output is not an
-            // ownership token: recheck the holder immediately before any registry or inventory
-            // mutation and keep the whole multi-block change atomic when one is reserved.
-            if (containsPendingAtomicDistillery(holderProposals.keySet())) {
+            // ownership token: reject the entire proposal batch before its first mutation when
+            // any captured holder is already reserved, absent, or replaced by an event callback.
+            if (containsPendingAtomicDistillery(holderProposals.keySet())
+                    || singlePositionStructures.stream().anyMatch(single -> !ownsSingle(single))
+                    || holderProposals.keySet().stream().anyMatch(holder -> !ownsHolder(holder))) {
                 return rejectDestroyProposals(destroyReceipts);
             }
 
-            singlePositionStructures.forEach(ListenerUtil::removeActiveSinglePositionStructure);
-            multiblockStructures.forEach(placedStructureRegistry::unregisterStructure);
+            for (SinglePositionStructure single : singlePositionStructures) {
+                if (!ListenerUtil.removeIfCurrent(single)) {
+                    return rejectDestroyProposals(destroyReceipts);
+                }
+            }
             Location location = locations.getFirst();
             for (Map.Entry<StructureHolder<?>, Result> entry : holderProposals.entrySet()) {
                 StructureHolder<?> holder = entry.getKey();
                 Result proposal = entry.getValue();
-                if (holder instanceof InventoryAccessible inventoryAccessible) {
-                    breweryRegistry.unregisterInventory(inventoryAccessible);
+                if (!remove(holder, proposal.commitSignal())) {
+                    return rejectDestroyProposals(destroyReceipts);
                 }
-                remove(holder, proposal.commitSignal());
+                // This proposal now owns its asynchronous SQL result. A later rejected holder
+                // cannot turn an already-admitted deletion's receipt into a false cancellation.
+                destroyReceipts.remove(proposal.commitSignal());
                 LocationUtil.dropBrews(location, proposal.drops());
             }
             return true;
@@ -369,6 +376,19 @@ public class BlockEventListener implements Listener {
             completeDestroyProposals(destroyReceipts, null, failure);
             throw failure;
         }
+    }
+
+    private boolean ownsSingle(SinglePositionStructure single) {
+        return breweryRegistry.getActiveSinglePositionStructure(single.position())
+                .filter(current -> current == single).isPresent();
+    }
+
+    private boolean ownsHolder(StructureHolder<?> holder) {
+        MultiblockStructure<?> structure = holder.getStructure();
+        return structure.getHolder() == holder && !structure.positions().isEmpty()
+                && structure.positions().stream().allMatch(position ->
+                placedStructureRegistry.getStructure(position).orElse(null) == structure
+                        && placedStructureRegistry.getHolder(position).orElse(null) == holder);
     }
 
     static boolean rejectDestroyProposals(
@@ -491,36 +511,51 @@ public class BlockEventListener implements Listener {
                           @Nullable CompletableFuture<Boolean> commitSignal) {
     }
 
-    private void remove(StructureHolder<?> holder,
+    private boolean remove(StructureHolder<?> holder,
                         @Nullable CompletableFuture<Boolean> commitSignal) {
         try {
+            if (!ownsHolder(holder) || containsPendingAtomicDistillery(List.of(holder))) {
+                return false;
+            }
+            // Keep every structure alias owned while closing its viewers. Releasing aliases
+            // first lets an InventoryCloseEvent listener create a replacement before our DELETE.
             switch (holder) {
-                case BukkitBarrel barrel -> {
-                    barrel.destroyWithoutDrops();
-                    database.startSession(SessionTypes.BARREL_SESSION_TYPE).removeBarrel(barrel)
-                            .exceptionally(Logger::logAndTrackErr);
-                }
-                case BukkitDistillery distillery -> {
-                    distillery.destroyWithoutDrops();
-                    CompletableFuture<Void> persistence = database
-                            .startSession(SessionTypes.DISTILLERY_SESSION_TYPE)
-                            .removeDistillery(distillery);
-                    if (commitSignal != null) {
-                        linkDestroyReceipt(commitSignal, persistence);
-                    }
-                    persistence.whenComplete((ignored, failure) -> {
-                        if (failure != null) {
-                            Logger.logAndTrackErr(failure);
-                        }
-                    });
-                }
+                case BukkitBarrel barrel -> barrel.destroyWithoutDrops();
+                case BukkitDistillery distillery -> distillery.destroyWithoutDrops();
                 default -> throw new IllegalArgumentException("Unknown structure type");
             }
+            if (!ownsHolder(holder) || containsPendingAtomicDistillery(List.of(holder))) {
+                return false;
+            }
+            CompletableFuture<Void> persistence = switch (holder) {
+                case BukkitBarrel barrel -> database.startSession(SessionTypes.BARREL_SESSION_TYPE)
+                        .removeBarrel(barrel);
+                case BukkitDistillery distillery -> database.startSession(SessionTypes.DISTILLERY_SESSION_TYPE)
+                        .removeDistillery(distillery);
+                default -> throw new IllegalArgumentException("Unknown structure type");
+            };
+            // These registry operations have no Bukkit callbacks. The delete has been admitted
+            // ahead of any later replacement insert on the owner's ordered database executor.
+            if (holder instanceof InventoryAccessible inventoryAccessible) {
+                breweryRegistry.unregisterOpened(inventoryAccessible);
+                breweryRegistry.unregisterInventory(inventoryAccessible);
+            }
+            placedStructureRegistry.unregisterStructure(holder.getStructure());
+            if (commitSignal != null) {
+                linkDestroyReceipt(commitSignal, persistence);
+            }
+            persistence.whenComplete((ignored, failure) -> {
+                if (failure != null) {
+                    Logger.logAndTrackErr(failure);
+                }
+            });
+            return true;
         } catch (PersistenceException e) {
             if (commitSignal != null) {
                 commitSignal.completeExceptionally(e);
             }
             Logger.logErr(e);
+            return false;
         } catch (RuntimeException | Error failure) {
             if (commitSignal != null) {
                 commitSignal.completeExceptionally(failure);
