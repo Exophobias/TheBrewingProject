@@ -17,6 +17,18 @@ import java.util.concurrent.CompletableFuture;
 public interface TheBrewingProjectApi {
 
     /**
+     * Read persisted parent and brew rows for 1..32 distinct keys in the same world, in one
+     * owner-ordered read transaction. Includes orphan brew rows; does not hydrate holders, load
+     * chunks, mutate SQL, or confer a reservation. Live ownership must be checked separately.
+     * Invalid requests and unsupported/failed reads never masquerade as empty persistence.
+     */
+    default CompletableFuture<dev.jsinco.brewery.api.persistence.BreweryPersistenceSnapshot>
+            inspectPersistedStructures(java.util.List<dev.jsinco.brewery.api.vector.BreweryLocation> keys) {
+        dev.jsinco.brewery.api.persistence.BreweryPersistenceSnapshot.validateKeys(keys);
+        return CompletableFuture.failedFuture(new UnsupportedOperationException("Exact persistence inspection is unavailable"));
+    }
+
+    /**
      * @return A brew manager instance that helps you create and read brews
      */
     BrewManager<ItemStack> getBrewManager();

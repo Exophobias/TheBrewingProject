@@ -570,6 +570,18 @@ public class TheBrewingProject extends JavaPlugin implements TheBrewingProjectAp
         return this.database;
     }
 
+    @Override
+    public java.util.concurrent.CompletableFuture<dev.jsinco.brewery.api.persistence.BreweryPersistenceSnapshot>
+            inspectPersistedStructures(java.util.List<dev.jsinco.brewery.api.vector.BreweryLocation> keys) {
+        var captured = dev.jsinco.brewery.api.persistence.BreweryPersistenceSnapshot.validateKeys(keys);
+        if (!isEnabled() || database == null) return java.util.concurrent.CompletableFuture.failedFuture(
+                new IllegalStateException("Persistence owner is unavailable"));
+        try {
+            return database.startSession(dev.jsinco.brewery.bukkit.database.SessionTypes.EXACT_STRUCTURE_INSPECTION_SESSION_TYPE)
+                    .inspect(captured);
+        } catch (Throwable failure) { return java.util.concurrent.CompletableFuture.failedFuture(failure); }
+    }
+
     public DrunkTextRegistry getDrunkTextRegistry() {
         return this.drunkTextRegistry;
     }

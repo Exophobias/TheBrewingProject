@@ -468,6 +468,7 @@ public class BlockEventListener implements Listener {
     private static Result callPlacedStructureEvent(Location location, @Nullable Player player, StructureHolder<?> holder) {
         return switch (holder) {
             case BukkitBarrel barrel -> {
+                CompletableFuture<Boolean> commitSignal = new CompletableFuture<>();
                 BarrelDestroyEvent event = new BarrelDestroyEvent(
                         player == null || player.hasPermission("brewery.barrel.access") ?
                                 new CancelState.Allowed() :
@@ -475,10 +476,16 @@ public class BlockEventListener implements Listener {
                         barrel,
                         player,
                         location,
-                        barrel.calculateDestroyDrops()
+                        barrel.calculateDestroyDrops(),
+                        commitSignal
                 );
-                event.callEvent();
-                yield new Result(event.getCancelState(), event.getDrops(), null);
+                try {
+                    event.callEvent();
+                } catch (RuntimeException | Error failure) {
+                    commitSignal.completeExceptionally(failure);
+                    throw failure;
+                }
+                yield new Result(event.getCancelState(), event.getDrops(), commitSignal);
             }
             case BukkitDistillery distillery -> {
                 CancelState initialState = distillery.isAtomicMovePending()

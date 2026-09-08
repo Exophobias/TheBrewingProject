@@ -25,12 +25,17 @@ class DistilleryDestroyCommitContractTest {
     );
 
     @Test
-    void legacyConstructorRetainsImmediateCommitSemantics() {
+    void legacyProposalCannotAuthorizeIrreversibleWorkWithoutAnOwnerReceipt() {
         DistilleryDestroyEvent event = new DistilleryDestroyEvent(
                 new CancelState.Allowed(), DISTILLERY, null, null, List.of()
         );
 
-        assertTrue(event.getCommitResult().toCompletableFuture().join());
+        AtomicBoolean irreversibleWork = new AtomicBoolean();
+        event.getCommitResult().thenAccept(committed -> {
+            if (committed) irreversibleWork.set(true);
+        });
+        assertFalse(event.getCommitResult().toCompletableFuture().join());
+        assertFalse(irreversibleWork.get());
     }
 
     @Test

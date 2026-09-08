@@ -31,7 +31,9 @@ public class DistilleryDestroyEvent extends BreweryDestroyEvent {
     private final CompletionStage<Boolean> commitResult;
 
     public DistilleryDestroyEvent(CancelState state, DistilleryAccess distillery, @Nullable Player player, Location location, Collection<Brew> drops) {
-        this(state, distillery, player, location, drops, CompletableFuture.completedFuture(true));
+        // A legacy third-party proposal has no owner deletion acknowledgment. The real owner
+        // paths use the overload with their persistence future; do not fabricate their success.
+        this(state, distillery, player, location, drops, CompletableFuture.completedFuture(false));
     }
 
     /**

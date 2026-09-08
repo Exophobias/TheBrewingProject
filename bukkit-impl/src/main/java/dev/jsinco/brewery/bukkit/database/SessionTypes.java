@@ -20,6 +20,11 @@ import java.util.concurrent.Executor;
 
 public final class SessionTypes {
 
+    public static final SessionType<dev.jsinco.brewery.bukkit.database.hydration.ExactStructureInspectionSession>
+            EXACT_STRUCTURE_INSPECTION_SESSION_TYPE = (executor, handler) ->
+            new dev.jsinco.brewery.bukkit.database.hydration.SqLiteExactStructureInspectionSession(
+                    executor, ((SqlDatabase) handler)::getConnection);
+
     public static final SessionType<BarrelSession> BARREL_SESSION_TYPE = SessionTypes::newBarrelSession;
     public static final SessionType<DistillerySession> DISTILLERY_SESSION_TYPE = SessionTypes::newDistillerySession;
     public static final SessionType<CauldronSession> CAULDRON_SESSION_TYPE = SessionTypes::newCauldronSession;
