@@ -64,6 +64,8 @@ import org.bukkit.Material;
 import org.bukkit.Tag;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
+import org.bukkit.block.data.BlockData;
+import org.bukkit.block.data.Levelled;
 import org.bukkit.entity.Player;
 import org.bukkit.event.Event;
 import org.bukkit.event.EventHandler;
@@ -271,9 +273,27 @@ public class PlayerEventListener implements Listener {
         event.setUseItemInHand(Event.Result.DENY);
     }
 
-    private void handleCauldronExtract(PlayerInteractEvent event, Block block, BukkitCauldron cauldron) {
+    void handleCauldronExtract(PlayerInteractEvent event, Block block, BukkitCauldron cauldron) {
+        // Claim this interaction before owner callbacks or lazy result rendering can throw.
+        event.setUseInteractedBlock(Event.Result.DENY);
+        event.setUseItemInHand(Event.Result.DENY);
         Player player = event.getPlayer();
-        Brew brew = cauldron.getUpdatedBrew()
+        EquipmentSlot hand = event.getHand();
+        ItemStack eventItem = event.getItem();
+        if (eventItem == null || eventItem.getType() != Material.GLASS_BOTTLE || eventItem.isEmpty()) {
+            return;
+        }
+        ItemStack input = eventItem.clone();
+        int heldSlot = player.getInventory().getHeldItemSlot();
+        String blockState = block.getBlockData().getAsString();
+        if (!validCauldronExtraction(player, hand, heldSlot, block, cauldron, input, blockState, cauldron.getBrew())) {
+            return;
+        }
+        Brew sourceBrew = cauldron.getUpdatedBrew();
+        if (!validCauldronExtraction(player, hand, heldSlot, block, cauldron, input, blockState, sourceBrew)) {
+            return;
+        }
+        Brew brew = sourceBrew
                 .witModifiedLastStep(step ->
                         step instanceof BrewingStep.AuthoredStep<?> authoredStep
                                 ? authoredStep.withBrewer(player.getUniqueId()) : step
@@ -293,14 +313,44 @@ public class PlayerEventListener implements Listener {
             return;
         }
 
-        ItemStack brewItemStack = cauldron.extractBrew(extractEvent.getItemResult());
-        updateHeldItem(decreaseItem(event.getItem(), player), player, event.getHand());
+        if (!validCauldronExtraction(player, hand, heldSlot, block, cauldron, input, blockState, sourceBrew)) {
+            return;
+        }
+        Optional<ItemStack> result = cauldron.tryExtractBrew(extractEvent.getItemResult(),
+                () -> validCauldronExtraction(player, hand, heldSlot, block, cauldron, input, blockState, sourceBrew));
+        if (result.isEmpty()) {
+            return;
+        }
+        ItemStack brewItemStack = result.get();
+        // The existing native delivery and serving-persistence boundary is unchanged here.
+        updateHeldItem(decreaseItem(input.clone(), player), player, hand);
         player.getWorld().dropItem(player.getLocation(), brewItemStack);
         Optional.ofNullable(brewItemStack.getPersistentDataContainer().get(BrewAdapterAccess.BREWERY_SCORE, PersistentDataType.DOUBLE))
                 .ifPresent(score -> Statistics.registerBrewMade(BrewQuality.quality(score).orElse(null)));
         if (cauldron.decrementLevel()) {
             ListenerUtil.removeActiveSinglePositionStructure(cauldron);
         }
+    }
+
+    private boolean validCauldronExtraction(Player player, @Nullable EquipmentSlot hand, int heldSlot, Block block,
+                                            BukkitCauldron cauldron, ItemStack input, String blockState,
+                                            Brew sourceBrew) {
+        if (!player.isOnline() || player.getWorld() != block.getWorld()
+                || hand != EquipmentSlot.HAND && hand != EquipmentSlot.OFF_HAND) {
+            return false;
+        }
+        if (!cauldron.position().equals(BukkitAdapter.toBreweryLocation(block))
+                || breweryRegistry.getActiveSinglePositionStructure(cauldron.position()).orElse(null) != cauldron
+                || cauldron.getBrew() != sourceBrew
+                || hand == EquipmentSlot.HAND && player.getInventory().getHeldItemSlot() != heldSlot
+                || !input.equals(player.getInventory().getItem(hand))) {
+            return false;
+        }
+        BlockData data = block.getBlockData();
+        return block.getType().getKey().toString().equals(cauldron.getCauldronType().materialKey())
+                && blockState.equals(data.getAsString())
+                && (block.getType() == Material.LAVA_CAULDRON
+                || data instanceof Levelled levelled && levelled.getLevel() > 0);
     }
 
     private boolean handleIngredientAddition(ItemStack itemStack, Block block, @Nullable BukkitCauldron cauldron, Player player, @Nullable EquipmentSlot hand) {

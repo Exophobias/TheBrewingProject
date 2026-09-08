@@ -72,6 +72,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Random;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -498,14 +499,26 @@ public class BukkitCauldron implements Cauldron {
     }
 
     public ItemStack extractBrew(ItemSource itemSource) {
+        return tryExtractBrew(itemSource, () -> true)
+                .orElseThrow(() -> new IllegalStateException("Cauldron extraction produced no item"));
+    }
+
+    /**
+     * Materializes the result before applying extraction effects. The caller revalidates its
+     * source and held item after rendering, which may invoke integrations. This is not a durable
+     * serving or item-delivery receipt; ordinary delivery remains the caller's responsibility.
+     */
+    public Optional<ItemStack> tryExtractBrew(ItemSource itemSource, BooleanSupplier stillCurrent) {
+        ItemStack result = itemSource instanceof ItemSource.BrewBasedSource brewBasedSource
+                ? RecipeMatcherImpl.builder().build().match(brewBasedSource.brew())
+                .toItem(new Brew.State.Other(), previousDefaultRecipe)
+                : itemSource.get();
+        if (result == null || result.isEmpty() || !stillCurrent.getAsBoolean()) {
+            return Optional.empty();
+        }
         this.brewExtracted = true;
         playBrewExtractedEffects();
-        if (!(itemSource instanceof ItemSource.BrewBasedSource brewBasedSource)) {
-            return itemSource.get();
-        }
-        return RecipeMatcherImpl.builder().build()
-                .match(brewBasedSource.brew())
-                .toItem(new Brew.State.Other(), previousDefaultRecipe);
+        return Optional.of(result);
     }
 
     private void recalculateBrewTime() {
