@@ -7,6 +7,8 @@ import java.util.concurrent.CompletableFuture;
 
 public interface CauldronSession extends Session<CauldronSession> {
 
+    // Writes bind the holder's runtime capability. Cancellation cannot discard admitted SQL work.
+
     CompletableFuture<Void> insertCauldron(BukkitCauldron cauldron);
 
     CompletableFuture<Void> updateCauldron(BukkitCauldron newCauldron);

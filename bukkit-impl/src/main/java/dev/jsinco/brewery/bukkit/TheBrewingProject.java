@@ -156,6 +156,12 @@ public class TheBrewingProject extends JavaPlugin implements TheBrewingProjectAp
     private final ActiveEventsRegistry activeEventsRegistry = new ActiveEventsRegistry();
     private final AtomicMutationGate atomicMutationGate = new AtomicMutationGate();
     private final OwnerPublicationQueue ownerPublications = new OwnerPublicationQueue();
+    private final dev.jsinco.brewery.bukkit.database.cauldron.CauldronPersistenceOrder cauldronPersistenceOrder =
+            new dev.jsinco.brewery.bukkit.database.cauldron.CauldronPersistenceOrder();
+
+    public dev.jsinco.brewery.bukkit.database.cauldron.CauldronPersistenceOrder getCauldronPersistenceOrder() {
+        return cauldronPersistenceOrder;
+    }
     private PlayerWalkListener playerWalkListener;
     private ModifierManager modifierManager = new ModifierManagerImpl();
     private BreweryTranslator translator;
@@ -297,7 +303,8 @@ public class TheBrewingProject extends JavaPlugin implements TheBrewingProjectAp
     }
 
     private boolean hasPendingAtomicDistilleryMutation() {
-        return placedStructureRegistry.getStructures(StructureType.DISTILLERY).stream()
+        return cauldronPersistenceOrder.unresolved(null)
+                || placedStructureRegistry.getStructures(StructureType.DISTILLERY).stream()
                 .map(MultiblockStructure::getHolder)
                 .filter(BukkitDistillery.class::isInstance)
                 .map(BukkitDistillery.class::cast)

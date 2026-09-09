@@ -287,6 +287,16 @@ public class BlockEventListener implements Listener {
     }
 
 
+    @EventHandler(ignoreCancelled = true, priority = EventPriority.HIGHEST)
+    public void guardReservedCauldronLevelChange(CauldronLevelChangeEvent event) {
+        BreweryLocation location = BukkitAdapter.toBreweryLocation(event.getBlock());
+        if (breweryRegistry.getActiveSinglePositionStructure(location)
+                .filter(BukkitCauldron.class::isInstance).map(BukkitCauldron.class::cast)
+                .filter(BukkitCauldron::isExtractionPending).isPresent()) {
+            event.setCancelled(true);
+        }
+    }
+
     @EventHandler(ignoreCancelled = true, priority = EventPriority.MONITOR)
     public void onCauldronLevelChange(CauldronLevelChangeEvent event) {
         BreweryLocation breweryLocation = BukkitAdapter.toBreweryLocation(event.getBlock());

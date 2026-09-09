@@ -15,27 +15,41 @@ public class ListenerUtil {
     }
 
     static boolean removeIfCurrent(@NonNull SinglePositionStructure structure) {
+        return removeIfCurrent(structure, null);
+    }
+
+    static boolean removeIfCurrent(@NonNull SinglePositionStructure structure,
+                                   BukkitCauldron.ExtractionReservation extraction) {
         var registry = TheBrewingProject.getInstance().getBreweryRegistry();
-        if (!isCurrent(structure)) {
+        if (!isCurrent(structure) || !mayRemove(structure, extraction)) {
             return false;
         }
-        structure.destroy();
+        if (extraction != null && structure instanceof BukkitCauldron cauldron) cauldron.destroyForExtraction(extraction);
+        else structure.destroy();
         // Teardown can invoke another plugin's entity-removal callback. A replacement may now
         // own this coordinate; identity-aware registry removal alone cannot protect its SQL row.
-        if (!isCurrent(structure)) {
+        if (!isCurrent(structure) || !mayRemove(structure, extraction)) {
             return false;
         }
         if (structure instanceof BukkitCauldron cauldron) {
             try {
-                TheBrewingProject.getInstance().getDatabase().startSession(SessionTypes.CAULDRON_SESSION_TYPE)
-                        .removeCauldron(cauldron)
-                        .exceptionally(Logger::logAndTrackErr);
-            } catch (PersistenceException e) {
+                var deletion = TheBrewingProject.getInstance().getDatabase().startSession(SessionTypes.CAULDRON_SESSION_TYPE)
+                        .removeCauldron(cauldron);
+                if (deletion.isCompletedExceptionally()) { deletion.exceptionally(Logger::logAndTrackErr); return false; }
+                deletion.exceptionally(Logger::logAndTrackErr);
+            } catch (PersistenceException | RuntimeException e) {
                 Logger.logErr(e);
+                return false;
             }
         }
         registry.removeActiveSinglePositionStructure(structure);
         return true;
+    }
+
+    private static boolean mayRemove(SinglePositionStructure structure, BukkitCauldron.ExtractionReservation extraction) {
+        if (!(structure instanceof BukkitCauldron cauldron)) return extraction == null;
+        return cauldron.persistenceAvailable()
+                && (extraction == null ? !cauldron.isExtractionPending() : cauldron.ownsExtraction(extraction));
     }
 
     public static boolean isCurrent(@NonNull SinglePositionStructure structure) {

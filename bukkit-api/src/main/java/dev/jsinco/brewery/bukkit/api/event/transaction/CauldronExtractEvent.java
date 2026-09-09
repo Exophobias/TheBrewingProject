@@ -11,6 +11,11 @@ import org.bukkit.inventory.ItemStack;
 import org.jspecify.annotations.NonNull;
 import org.jspecify.annotations.Nullable;
 
+import java.util.Objects;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+
 public class CauldronExtractEvent extends PermissibleBreweryEvent {
 
     private final Cauldron cauldron;
@@ -21,14 +26,29 @@ public class CauldronExtractEvent extends PermissibleBreweryEvent {
     private ItemSource.BrewBasedSource brewSource;
     private ItemSource itemResult;
     private final @Nullable Player player;
+    private final CompletionStage<Optional<CauldronExtractionReceipt>> completionResult;
 
     public CauldronExtractEvent(Cauldron cauldron, ItemSource.BrewBasedSource brewSource,
                                 dev.jsinco.brewery.api.util.@NonNull CancelState state, @Nullable Player player) {
+        this(cauldron, brewSource, state, player, CompletableFuture.completedFuture(Optional.empty()));
+    }
+
+    /**
+     * Creates a synchronous proposal with its owner's eventual runtime observation. Legacy
+     * proposals have no observation. Empty completion means no proven completed extraction,
+     * not proof of rollback or unchanged inputs; an exceptional completion can include partial
+     * native side effects. This stage never grants item replay or certifies durable delivery.
+     */
+    public CauldronExtractEvent(Cauldron cauldron, ItemSource.BrewBasedSource brewSource,
+                                dev.jsinco.brewery.api.util.@NonNull CancelState state, @Nullable Player player,
+                                CompletionStage<Optional<CauldronExtractionReceipt>> completionResult) {
         super(state);
         this.cauldron = cauldron;
         this.brewSource = brewSource;
         this.itemResult = brewSource;
         this.player = player;
+        this.completionResult = Objects.requireNonNull(completionResult, "completionResult")
+                .toCompletableFuture().minimalCompletionStage();
     }
 
     /**
@@ -72,6 +92,15 @@ public class CauldronExtractEvent extends PermissibleBreweryEvent {
 
     public ItemSource getItemResult() {
         return this.itemResult;
+    }
+
+    /**
+     * Read-only runtime completion. TBP settles this synchronously on the owning execution
+     * thread after finishing the proposal, including refused and failed outcomes. Consumers
+     * must use the receipt's item snapshot rather than re-rendering this mutable proposal.
+     */
+    public CompletionStage<Optional<CauldronExtractionReceipt>> getCompletionResult() {
+        return completionResult;
     }
 
     @Nullable

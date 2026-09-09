@@ -63,7 +63,8 @@ public final class SessionTypes {
         }
         return switch (handler.driver()) {
             case SQLITE ->
-                    new SqLiteCauldronSession(executor, database::getConnection, TheBrewingProject.getInstance().getResolvedIngredientManager());
+                    new SqLiteCauldronSession(executor, database::getConnection, TheBrewingProject.getInstance().getResolvedIngredientManager(),
+                            TheBrewingProject.getInstance().getCauldronPersistenceOrder());
             default -> throw new IllegalStateException("Unknown driver: " + handler.driver());
         };
     }

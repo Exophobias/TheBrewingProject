@@ -42,10 +42,12 @@ public class WorldEventListener implements Listener {
 
     /** Called before reload clears any registry or begins draining the database. */
     public void invalidateAll() {
+        TheBrewingProject.getInstance().getCauldronPersistenceOrder().invalidateAll();
         hydration.invalidateAll();
     }
 
     public void stop() {
+        TheBrewingProject.getInstance().getCauldronPersistenceOrder().stop();
         hydration.stop();
     }
 
@@ -74,6 +76,7 @@ public class WorldEventListener implements Listener {
             return;
         }
         try {
+            TheBrewingProject.getInstance().getCauldronPersistenceOrder().invalidate(worldUuid);
             hydration.invalidate(worldUuid);
             placedStructureRegistry.unloadWorld(worldUuid);
             registry.unloadWorld(worldUuid);
@@ -83,7 +86,8 @@ public class WorldEventListener implements Listener {
     }
 
     private boolean hasPendingAtomicDistilleryMutation(java.util.UUID worldUuid) {
-        return placedStructureRegistry.getStructures(StructureType.DISTILLERY).stream()
+        return TheBrewingProject.getInstance().getCauldronPersistenceOrder().unresolved(worldUuid)
+                || placedStructureRegistry.getStructures(StructureType.DISTILLERY).stream()
                 .filter(structure -> structure.getUnique().worldUuid().equals(worldUuid))
                 .map(structure -> structure.getHolder())
                 .filter(BukkitDistillery.class::isInstance)
@@ -93,6 +97,8 @@ public class WorldEventListener implements Listener {
 
     public CompletableFuture<Void> loadWorld(World world) {
         UUID worldId = world.getUID();
+        // Close source capabilities even if acquiring the separate hydration gate throws.
+        TheBrewingProject.getInstance().getCauldronPersistenceOrder().invalidate(worldId);
         var load = hydration.begin(worldId);
         load.result().whenComplete((ignored, failure) -> {
             if (failure != null && !(failure instanceof CancellationException)) {
@@ -103,14 +109,18 @@ public class WorldEventListener implements Listener {
         });
         try {
             var plugin = TheBrewingProject.getInstance();
-            database.startSession(SessionTypes.WORLD_HYDRATION_SESSION_TYPE).readWorld(worldId)
+            var cauldronHydration = plugin.getCauldronPersistenceOrder().beginHydration(worldId, () -> hydration.isCurrent(load));
+            cauldronHydration.drained().thenCompose(ignored -> {
+                try { return database.startSession(SessionTypes.WORLD_HYDRATION_SESSION_TYPE).readWorld(worldId); }
+                catch (PersistenceException failure) { return CompletableFuture.failedFuture(failure); }
+            })
                     .thenCompose(snapshot -> plugin.getResolvedIngredientManager().thenApply(ingredients -> (Runnable) () -> {
                         if (Bukkit.getWorld(worldId) != world) {
                             hydration.invalidate(worldId);
                             return;
                         }
                         hydration.publish(load, () -> WorldBreweryHydrator.publish(world, snapshot, ingredients,
-                                placedStructureRegistry, registry));
+                                placedStructureRegistry, registry, cauldronHydration));
                     }))
                     .thenAccept(publication -> {
                         if (hydration.isCurrent(load)) {
@@ -123,7 +133,7 @@ public class WorldEventListener implements Listener {
                     .whenComplete((ignored, failure) -> {
                         if (failure != null) hydration.fail(load, failure);
                     });
-        } catch (PersistenceException | RuntimeException failure) {
+        } catch (RuntimeException failure) {
             hydration.fail(load, failure);
         }
         return load.result();

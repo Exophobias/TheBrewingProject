@@ -297,8 +297,10 @@ class OrdinaryRemovalOwnershipTest {
 
     private void replace(TrackedCauldron old, TrackedCauldron current) {
         try {
+            // A supported replacement acquires the lane only behind the old exact terminal write.
+            plugin.getDatabase().startSession(SessionTypes.CAULDRON_SESSION_TYPE).removeCauldron(old).join();
             plugin.getBreweryRegistry().addActiveSinglePositionStructure(current);
-            plugin.getDatabase().startSession(SessionTypes.CAULDRON_SESSION_TYPE).updateCauldron(current).join();
+            plugin.getDatabase().startSession(SessionTypes.CAULDRON_SESSION_TYPE).insertCauldron(current).join();
         } catch (Exception failure) {
             throw new AssertionError(failure);
         }

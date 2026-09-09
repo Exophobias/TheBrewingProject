@@ -17,6 +17,7 @@ import dev.jsinco.brewery.bukkit.breweries.BukkitCauldron;
 import dev.jsinco.brewery.bukkit.breweries.barrel.BukkitBarrel;
 import dev.jsinco.brewery.bukkit.breweries.distillery.BukkitDistillery;
 import dev.jsinco.brewery.bukkit.database.hydration.WorldBrewerySnapshot;
+import dev.jsinco.brewery.bukkit.database.cauldron.CauldronPersistenceOrder;
 import dev.jsinco.brewery.bukkit.structure.PlacedBreweryStructure;
 import dev.jsinco.brewery.structure.PlacedStructureRegistryImpl;
 import dev.jsinco.brewery.util.DecoderEncoder;
@@ -34,6 +35,14 @@ final class WorldBreweryHydrator {
     static void publish(World world, WorldBrewerySnapshot rows,
                         ResolvedIngredientManager<ItemStack> ingredients,
                         PlacedStructureRegistryImpl structures, BreweryRegistry registry) {
+        if (!rows.cauldrons().isEmpty()) throw new IllegalStateException("Cauldron hydration requires its exact drained lifecycle");
+        publish(world, rows, ingredients, structures, registry, null);
+    }
+
+    static void publish(World world, WorldBrewerySnapshot rows,
+                        ResolvedIngredientManager<ItemStack> ingredients,
+                        PlacedStructureRegistryImpl structures, BreweryRegistry registry,
+                        CauldronPersistenceOrder.Hydration cauldronHydration) {
         List<MultiblockStructure<?>> stagedStructures = new ArrayList<>();
         List<InventoryAccessible<ItemStack, Inventory>> stagedInventories = new ArrayList<>();
         List<BukkitCauldron> stagedCauldrons = new ArrayList<>();
@@ -71,9 +80,12 @@ final class WorldBreweryHydrator {
             stagedCauldrons.add(new BukkitCauldron(brew, row.location(), type));
         }
         // Construction/deserialization/overlap checks finish before any holder becomes visible.
+        if (cauldronHydration != null) cauldronHydration.adopt(stagedCauldrons.stream()
+                .map(cauldron -> cauldron.persistenceOwner(TheBrewingProject.getInstance().getCauldronPersistenceOrder())).toList());
         structures.registerStructures(stagedStructures);
         registry.registerInventories(stagedInventories);
         stagedCauldrons.forEach(registry::addActiveSinglePositionStructure);
+        if (cauldronHydration != null) cauldronHydration.published();
     }
 
     private static Brew deserialize(String json, ResolvedIngredientManager<ItemStack> ingredients) {

@@ -23,6 +23,7 @@ import dev.jsinco.brewery.bukkit.api.BukkitAdapter;
 import dev.jsinco.brewery.bukkit.api.event.BrewConsumeEvent;
 import dev.jsinco.brewery.bukkit.api.event.structure.CauldronCreateEvent;
 import dev.jsinco.brewery.bukkit.api.event.transaction.CauldronExtractEvent;
+import dev.jsinco.brewery.bukkit.api.event.transaction.CauldronExtractionReceipt;
 import dev.jsinco.brewery.bukkit.api.integration.IntegrationTypes;
 import dev.jsinco.brewery.bukkit.api.transaction.ItemSource;
 import dev.jsinco.brewery.bukkit.brew.BrewAdapterAccess;
@@ -67,6 +68,7 @@ import org.bukkit.block.BlockFace;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.block.data.Levelled;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.Item;
 import org.bukkit.event.Event;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -92,6 +94,7 @@ import java.util.Optional;
 import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 
 public class PlayerEventListener implements Listener {
     public static final Set<Material> DISALLOWED_INGREDIENT_MATERIALS = Set.of(Material.BUCKET, Material.GLASS_BOTTLE);
@@ -277,22 +280,42 @@ public class PlayerEventListener implements Listener {
         // Claim this interaction before owner callbacks or lazy result rendering can throw.
         event.setUseInteractedBlock(Event.Result.DENY);
         event.setUseItemInHand(Event.Result.DENY);
+        var admitted = cauldron.reserveExtraction();
+        if (admitted.isEmpty()) return;
+        var completion = new CompletableFuture<Optional<CauldronExtractionReceipt>>();
+        Optional<CauldronExtractionReceipt> observation;
+        try (var reservation = admitted.get()) {
+            observation = extractReserved(event, block, cauldron, reservation, completion);
+        } catch (RuntimeException | Error failure) {
+            completion.completeExceptionally(failure);
+            throw failure;
+        }
+        completion.complete(observation);
+    }
+
+    private Optional<CauldronExtractionReceipt> extractReserved(PlayerInteractEvent event, Block block,
+            BukkitCauldron cauldron, BukkitCauldron.ExtractionReservation reservation,
+            CompletableFuture<Optional<CauldronExtractionReceipt>> completion) {
         Player player = event.getPlayer();
         EquipmentSlot hand = event.getHand();
         ItemStack eventItem = event.getItem();
         if (eventItem == null || eventItem.getType() != Material.GLASS_BOTTLE || eventItem.isEmpty()) {
-            return;
+            return Optional.empty();
         }
         ItemStack input = eventItem.clone();
         int heldSlot = player.getInventory().getHeldItemSlot();
         String blockState = block.getBlockData().getAsString();
         if (!validCauldronExtraction(player, hand, heldSlot, block, cauldron, input, blockState, cauldron.getBrew())) {
-            return;
+            return Optional.empty();
         }
         Brew sourceBrew = cauldron.getUpdatedBrew();
         if (!validCauldronExtraction(player, hand, heldSlot, block, cauldron, input, blockState, sourceBrew)) {
-            return;
+            return Optional.empty();
         }
+        int levelBefore = cauldron.getLevel();
+        BlockData afterLevel = levelBefore == 1 ? Material.CAULDRON.createBlockData() : block.getBlockData().clone();
+        if (levelBefore > 1) ((Levelled) afterLevel).setLevel(levelBefore - 1);
+        String expectedBlockAfter = afterLevel.getAsString();
         Brew brew = sourceBrew
                 .witModifiedLastStep(step ->
                         step instanceof BrewingStep.AuthoredStep<?> authoredStep
@@ -304,46 +327,69 @@ public class PlayerEventListener implements Listener {
                 new ItemSource.BrewBasedSource(brew, new Brew.State.Other()),
                 player.hasPermission("brewery.cauldron.access") ?
                         new CancelState.Allowed() : new CancelState.PermissionDenied(Component.translatable("tbp.cauldron.access-denied")),
-                player
+                player, completion
         );
         if (!extractEvent.callEvent()) {
             if (extractEvent.getCancelState() instanceof CancelState.PermissionDenied(Component denyMessage)) {
                 player.sendMessage(denyMessage);
             }
-            return;
+            return Optional.empty();
         }
 
         if (!validCauldronExtraction(player, hand, heldSlot, block, cauldron, input, blockState, sourceBrew)) {
-            return;
+            return Optional.empty();
         }
         Optional<ItemStack> result = cauldron.tryExtractBrew(extractEvent.getItemResult(),
-                () -> validCauldronExtraction(player, hand, heldSlot, block, cauldron, input, blockState, sourceBrew));
+                () -> validCauldronExtraction(player, hand, heldSlot, block, cauldron, input, blockState, sourceBrew), reservation);
         if (result.isEmpty()) {
-            return;
+            return Optional.empty();
         }
         ItemStack brewItemStack = result.get();
-        // The existing native delivery and serving-persistence boundary is unchanged here.
-        updateHeldItem(decreaseItem(input.clone(), player), player, hand);
-        player.getWorld().dropItem(player.getLocation(), brewItemStack);
-        Optional.ofNullable(brewItemStack.getPersistentDataContainer().get(BrewAdapterAccess.BREWERY_SCORE, PersistentDataType.DOUBLE))
-                .ifPresent(score -> Statistics.registerBrewMade(BrewQuality.quality(score).orElse(null)));
-        if (cauldron.decrementLevel()) {
-            ListenerUtil.removeActiveSinglePositionStructure(cauldron);
+        if (!validCauldronExtraction(player, hand, heldSlot, block, cauldron, input, blockState, sourceBrew)) {
+            return Optional.empty();
         }
+        ItemStack remainingInput = decreaseItem(input.clone(), player);
+        // Ingredient transformation can itself call integrations or create a native item.
+        if (!validCauldronExtraction(player, hand, heldSlot, block, cauldron, input, blockState, sourceBrew)) {
+            return Optional.empty();
+        }
+        updateHeldItem(remainingInput.clone(), player, hand);
+        ItemStack expectedOutput = brewItemStack.clone();
+        Item dropped = player.getWorld().dropItem(player.getLocation(), brewItemStack);
+        // Native spawn callbacks may replace the holder, change the actor's world, or change the hand.
+        // Never decrement a replacement or manufacture a successful receipt after that ambiguity.
+        if (!validCauldronExtraction(player, hand, heldSlot, block, cauldron, remainingInput, blockState, sourceBrew)) {
+            return Optional.empty();
+        }
+        boolean emptied = cauldron.decrementLevel(reservation);
+        if (emptied && !ListenerUtil.removeIfCurrent(cauldron, reservation)) return Optional.empty();
+        if ((levelBefore == 1) != emptied || !expectedBlockAfter.equals(block.getBlockData().getAsString())
+                || !validExtractionActor(player, hand, heldSlot, block, remainingInput)
+                || cauldron.getBrew() != sourceBrew
+                || (emptied ? breweryRegistry.getActiveSinglePositionStructure(cauldron.position()).isPresent()
+                    : breweryRegistry.getActiveSinglePositionStructure(cauldron.position()).orElse(null) != cauldron)
+                || dropped == null || !dropped.isValid() || dropped.isDead()
+                || dropped.getWorld() != block.getWorld() || !expectedOutput.equals(dropped.getItemStack())) {
+            return Optional.empty();
+        }
+        // This observes the runtime handoff only. Final-serving SQL deletion is still asynchronous;
+        // vanilla item spawn and serving persistence are not one crash-safe transaction.
+        var receipt = new CauldronExtractionReceipt(player.getUniqueId(), cauldron.position(), levelBefore,
+                levelBefore - 1, remainingInput.getAmount() < input.getAmount(), dropped.getUniqueId(), expectedOutput);
+        Optional.ofNullable(expectedOutput.getPersistentDataContainer().get(BrewAdapterAccess.BREWERY_SCORE, PersistentDataType.DOUBLE))
+                .ifPresent(score -> Statistics.registerBrewMade(BrewQuality.quality(score).orElse(null)));
+        return Optional.of(receipt);
     }
 
     private boolean validCauldronExtraction(Player player, @Nullable EquipmentSlot hand, int heldSlot, Block block,
                                             BukkitCauldron cauldron, ItemStack input, String blockState,
                                             Brew sourceBrew) {
-        if (!player.isOnline() || player.getWorld() != block.getWorld()
-                || hand != EquipmentSlot.HAND && hand != EquipmentSlot.OFF_HAND) {
+        if (!validExtractionActor(player, hand, heldSlot, block, input)) {
             return false;
         }
         if (!cauldron.position().equals(BukkitAdapter.toBreweryLocation(block))
                 || breweryRegistry.getActiveSinglePositionStructure(cauldron.position()).orElse(null) != cauldron
-                || cauldron.getBrew() != sourceBrew
-                || hand == EquipmentSlot.HAND && player.getInventory().getHeldItemSlot() != heldSlot
-                || !input.equals(player.getInventory().getItem(hand))) {
+                || cauldron.getBrew() != sourceBrew) {
             return false;
         }
         BlockData data = block.getBlockData();
@@ -351,6 +397,15 @@ public class PlayerEventListener implements Listener {
                 && blockState.equals(data.getAsString())
                 && (block.getType() == Material.LAVA_CAULDRON
                 || data instanceof Levelled levelled && levelled.getLevel() > 0);
+    }
+
+    private boolean validExtractionActor(Player player, @Nullable EquipmentSlot hand, int heldSlot,
+                                         Block block, ItemStack expectedInput) {
+        if (!player.isOnline() || player.getWorld() != block.getWorld()
+                || hand != EquipmentSlot.HAND && hand != EquipmentSlot.OFF_HAND
+                || hand == EquipmentSlot.HAND && player.getInventory().getHeldItemSlot() != heldSlot) return false;
+        ItemStack current = player.getInventory().getItem(hand);
+        return expectedInput.isEmpty() ? current == null || current.isEmpty() : expectedInput.equals(current);
     }
 
     private boolean handleIngredientAddition(ItemStack itemStack, Block block, @Nullable BukkitCauldron cauldron, Player player, @Nullable EquipmentSlot hand) {
@@ -368,24 +423,38 @@ public class PlayerEventListener implements Listener {
                 return false;
             }
         }
+        if (!ingredientOwnerCurrent(cauldron, createNewCauldron)) return false;
         boolean addedIngredient = cauldron.withIngredient(itemStack, player);
         if (addedIngredient) {
-            updateHeldItem(decreaseItem(itemStack, player), player, hand);
+            if (!ingredientOwnerCurrent(cauldron, createNewCauldron)) return false;
+            ItemStack remainder = decreaseItem(itemStack, player);
+            // Container transformations may invoke integrations. Refusing stale publication here
+            // cannot undo an already emitted byproduct/input mutation; durable serving escrow is separate.
+            if (!ingredientOwnerCurrent(cauldron, createNewCauldron)) return false;
+            updateHeldItem(remainder, player, hand);
+            if (!ingredientOwnerCurrent(cauldron, createNewCauldron)) return false;
             try {
                 CauldronSession session = database.startSession(SessionTypes.CAULDRON_SESSION_TYPE);
                 if (createNewCauldron) {
-                    session.insertCauldron(cauldron)
-                            .exceptionally(Logger::logAndTrackErr);
+                    var insertion = session.insertCauldron(cauldron);
+                    insertion.exceptionally(Logger::logAndTrackErr);
+                    if (insertion.isCompletedExceptionally() || !ingredientOwnerCurrent(cauldron, true)) return false;
                     breweryRegistry.addActiveSinglePositionStructure(cauldron);
                 } else {
                     session.updateCauldron(cauldron)
                             .exceptionally(Logger::logAndTrackErr);
                 }
-            } catch (PersistenceException e) {
+            } catch (PersistenceException | RuntimeException e) {
                 Logger.logAndTrackErr(e);
+                return false;
             }
         }
         return addedIngredient;
+    }
+
+    private boolean ingredientOwnerCurrent(BukkitCauldron cauldron, boolean creating) {
+        var current = breweryRegistry.getActiveSinglePositionStructure(cauldron.position());
+        return cauldron.persistenceAvailable() && (creating ? current.isEmpty() : current.orElse(null) == cauldron);
     }
 
     private void updateHeldItem(ItemStack item, Player player, EquipmentSlot equipmentSlot) {

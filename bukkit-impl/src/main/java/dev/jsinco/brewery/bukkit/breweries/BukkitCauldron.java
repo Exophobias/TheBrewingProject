@@ -24,6 +24,7 @@ import dev.jsinco.brewery.bukkit.api.event.process.BrewCauldronProcessEvent;
 import dev.jsinco.brewery.bukkit.api.event.transaction.CauldronInsertEvent;
 import dev.jsinco.brewery.bukkit.api.transaction.ItemSource;
 import dev.jsinco.brewery.bukkit.brew.BrewAdapterAccess;
+import dev.jsinco.brewery.bukkit.database.cauldron.CauldronPersistenceOrder;
 import dev.jsinco.brewery.bukkit.ingredient.BukkitIngredientManager;
 import dev.jsinco.brewery.bukkit.listener.ListenerUtil;
 import dev.jsinco.brewery.bukkit.recipe.RecipeMatcherImpl;
@@ -90,18 +91,64 @@ public class BukkitCauldron implements Cauldron {
     private TextDisplay waterColorer = null;
     private final CauldronType cauldronType;
     private DefaultRecipe<ItemStack> previousDefaultRecipe = null;
+    private ExtractionReservation extractionReservation;
+    private final CauldronPersistenceOrder persistenceOrder;
+    private final CauldronPersistenceOrder.Owner persistenceOwner;
+
+    public CauldronPersistenceOrder.Owner persistenceOwner(CauldronPersistenceOrder order) {
+        if (order != persistenceOrder) throw new IllegalStateException("Cauldron belongs to another database lifecycle");
+        return persistenceOwner;
+    }
+
+    public boolean persistenceAvailable() { return persistenceOwner.writable(); }
+
+    private boolean sourceAccessible() {
+        return persistenceAvailable() && TheBrewingProject.getInstance().getBreweryRegistry()
+                .getActiveSinglePositionStructure(location).map(current -> current == this).orElse(true);
+    }
+
+    /** Synchronous source admission only; it provides no persistence or delivery guarantee. */
+    public synchronized Optional<ExtractionReservation> reserveExtraction() {
+        if (extractionReservation != null || !sourceAccessible()) return Optional.empty();
+        extractionReservation = new ExtractionReservation();
+        return Optional.of(extractionReservation);
+    }
+
+    public synchronized boolean isExtractionPending() { return extractionReservation != null; }
+
+    public synchronized boolean ownsExtraction(ExtractionReservation reservation) {
+        return reservation != null && extractionReservation == reservation;
+    }
+
+    private synchronized boolean permitsExtraction(ExtractionReservation reservation) {
+        return sourceAccessible() && (reservation == null ? extractionReservation == null : extractionReservation == reservation);
+    }
+
+    public final class ExtractionReservation implements AutoCloseable {
+        private ExtractionReservation() { }
+        @Override public void close() {
+            synchronized (BukkitCauldron.this) {
+                if (extractionReservation == this) extractionReservation = null;
+            }
+        }
+    }
 
     public BukkitCauldron(BreweryLocation location, boolean hot, CauldronType cauldronType) {
-        this.location = location;
+        this(new BrewImpl(List.of()), location, cauldronType);
         this.hot = hot;
-        this.brew = new BrewImpl(List.of());
-        this.cauldronType = cauldronType;
     }
 
     public BukkitCauldron(Brew brew, BreweryLocation location, CauldronType cauldronType) {
+        this(brew, location, cauldronType, TheBrewingProject.getInstance().getCauldronPersistenceOrder());
+    }
+
+    public BukkitCauldron(Brew brew, BreweryLocation location, CauldronType cauldronType,
+                          CauldronPersistenceOrder persistenceOrder) {
         this.location = location;
         this.brew = brew;
         this.cauldronType = cauldronType;
+        this.persistenceOrder = Objects.requireNonNull(persistenceOrder);
+        this.persistenceOwner = persistenceOrder.newOwner(location);
     }
 
     public static Optional<CauldronType> findCauldronType(Block block) {
@@ -116,7 +163,7 @@ public class BukkitCauldron implements Cauldron {
         BukkitAdapter.scheduleIfLoaded(location, TheBrewingProject.getInstance(), bukkitLocation -> {
             // A tick captured before removal/reload must not publish old visuals, inspect a
             // replacement's geometry, or queue a coordinate-only delete against its new row.
-            if (!ListenerUtil.isCurrent(this)) {
+            if (isExtractionPending() || !persistenceAvailable() || !ListenerUtil.isCurrent(this)) {
                 return;
             }
             if (!Tag.CAULDRONS.isTagged(bukkitLocation.getBlock().getType()) || getBlock().getType() == Material.CAULDRON) {
@@ -235,6 +282,7 @@ public class BukkitCauldron implements Cauldron {
     }
 
     public boolean withIngredient(@NonNull ItemStack item, Player player) {
+        if (isExtractionPending() || !sourceAccessible()) return false;
         CauldronInsertEvent insertEvent = new CauldronInsertEvent(this,
                 new ItemSource.ItemBasedSource(item),
                 player.hasPermission("brewery.cauldron.access") ?
@@ -247,8 +295,10 @@ public class BukkitCauldron implements Cauldron {
             }
             return false;
         }
+        if (isExtractionPending() || !sourceAccessible()) return false;
         this.hot = isHeatSource(getBlock().getRelative(BlockFace.DOWN));
         ItemStack addedItem = insertEvent.getItemSource().get();
+        if (isExtractionPending() || !sourceAccessible()) return false;
         Optional<Brew> optionalAddedBrew = BrewAdapterAccess.fromItem(addedItem);
         if (optionalAddedBrew.isPresent()) {
             return handleBrewReaddition(addedItem, optionalAddedBrew.get(), player);
@@ -357,7 +407,7 @@ public class BukkitCauldron implements Cauldron {
                 brew,
                 newBrew
         );
-        boolean shouldChange = brewCauldronProcessEvent.callEvent();
+        boolean shouldChange = brewCauldronProcessEvent.callEvent() && !isExtractionPending() && sourceAccessible();
         if (shouldChange) {
             brew = brewCauldronProcessEvent.getResult();
             this.matcherResult = RecipeMatcherImpl.builder().build().match(brew);
@@ -509,11 +559,18 @@ public class BukkitCauldron implements Cauldron {
      * serving or item-delivery receipt; ordinary delivery remains the caller's responsibility.
      */
     public Optional<ItemStack> tryExtractBrew(ItemSource itemSource, BooleanSupplier stillCurrent) {
+        return tryExtractBrew(itemSource, stillCurrent, null);
+    }
+
+    public Optional<ItemStack> tryExtractBrew(ItemSource itemSource, BooleanSupplier stillCurrent,
+                                            ExtractionReservation reservation) {
+        if (!permitsExtraction(reservation)) return Optional.empty();
         ItemStack result = itemSource instanceof ItemSource.BrewBasedSource brewBasedSource
                 ? RecipeMatcherImpl.builder().build().match(brewBasedSource.brew())
                 .toItem(new Brew.State.Other(), previousDefaultRecipe)
                 : itemSource.get();
-        if (result == null || result.isEmpty() || !stillCurrent.getAsBoolean()) {
+        if (result == null || result.isEmpty() || !stillCurrent.getAsBoolean()
+                || !permitsExtraction(reservation)) {
             return Optional.empty();
         }
         this.brewExtracted = true;
@@ -577,6 +634,11 @@ public class BukkitCauldron implements Cauldron {
     }
 
     public boolean decrementLevel() {
+        return decrementLevel(null);
+    }
+
+    public boolean decrementLevel(ExtractionReservation reservation) {
+        if (!permitsExtraction(reservation)) return false;
         Block block = getBlock();
         if (!Tag.CAULDRONS.isTagged(block.getType())) {
             return true;
@@ -639,6 +701,16 @@ public class BukkitCauldron implements Cauldron {
 
     @Override
     public void destroy() {
+        if (isExtractionPending()) return;
+        destroyDisplay();
+    }
+
+    public void destroyForExtraction(ExtractionReservation reservation) {
+        if (!ownsExtraction(reservation)) throw new IllegalStateException("Cauldron extraction reservation is not current");
+        destroyDisplay();
+    }
+
+    private void destroyDisplay() {
         if (waterColorer != null) {
             waterColorer.remove();
         }
@@ -662,11 +734,8 @@ public class BukkitCauldron implements Cauldron {
 
     @Override
     public CompletableFuture<Void> runLocally(Runnable action) {
-        CompletableFuture<Void> completableFuture = new CompletableFuture<>();
-        Bukkit.getRegionScheduler().run(TheBrewingProject.getInstance(), BukkitAdapter.toLocation(location).orElseThrow(), ignored -> {
-            action.run();
-            completableFuture.complete(null);
-        });
-        return completableFuture;
+        var plugin = TheBrewingProject.getInstance();
+        return plugin.getOwnerPublications().submit(false, action, callback ->
+                Bukkit.getRegionScheduler().run(plugin, BukkitAdapter.toLocation(location).orElseThrow(), ignored -> callback.run()));
     }
 }
