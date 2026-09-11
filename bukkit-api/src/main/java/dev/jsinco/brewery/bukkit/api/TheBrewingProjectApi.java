@@ -17,6 +17,30 @@ import java.util.concurrent.CompletableFuture;
 public interface TheBrewingProjectApi {
 
     /**
+     * Inspect 1..32 distinct cauldron keys in one world after their already accepted writes.
+     * Runs SELECT only, with bounded row/text and concurrent-read budgets. Admission and current()
+     * require the primary server thread (Folia region ownership is not supported by this seam).
+     * A receipt goes stale on any later cauldron write or hydration, even at another coordinate.
+     */
+    default dev.jsinco.brewery.api.persistence.CauldronPersistenceReceipt inspectPersistedCauldrons(
+            java.util.List<dev.jsinco.brewery.api.vector.BreweryLocation> keys) {
+        dev.jsinco.brewery.api.persistence.CauldronPersistenceSnapshot.validateKeys(keys);
+        throw new UnsupportedOperationException("Exact cauldron inspection is unavailable");
+    }
+
+    /**
+     * Retire only this exact current native holder, including ordinary display teardown. Acknowledges
+     * its original ordered DELETE plus absent-row SQL readback; never uses a caller-supplied future.
+     * May refuse after teardown callbacks change ownership. This destroys its brew, so callers must
+     * independently own the fixture/content and preserve their cleanup evidence before admission.
+     * No drops, inventory delivery, block restoration, cold deletion authority or retry is implied.
+     */
+    default dev.jsinco.brewery.api.persistence.CauldronPersistenceReceipt retireCauldron(
+            dev.jsinco.brewery.api.breweries.Cauldron cauldron) {
+        throw new UnsupportedOperationException("Acknowledged cauldron retirement is unavailable");
+    }
+
+    /**
      * Read persisted parent and brew rows for 1..32 distinct keys in the same world, in one
      * owner-ordered read transaction. Includes orphan brew rows; does not hydrate holders, load
      * chunks, mutate SQL, or confer a reservation. Live ownership must be checked separately.

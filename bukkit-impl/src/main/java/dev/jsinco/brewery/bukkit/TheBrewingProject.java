@@ -577,6 +577,16 @@ public class TheBrewingProject extends JavaPlugin implements TheBrewingProjectAp
         return this.database;
     }
 
+    @Override public dev.jsinco.brewery.api.persistence.CauldronPersistenceReceipt inspectPersistedCauldrons(
+            java.util.List<dev.jsinco.brewery.api.vector.BreweryLocation> keys) {
+        return dev.jsinco.brewery.bukkit.database.cauldron.CauldronPersistenceAccess.inspect(this, keys);
+    }
+
+    @Override public dev.jsinco.brewery.api.persistence.CauldronPersistenceReceipt retireCauldron(
+            dev.jsinco.brewery.api.breweries.Cauldron holder) {
+        return dev.jsinco.brewery.bukkit.database.cauldron.CauldronPersistenceAccess.retire(this, holder);
+    }
+
     @Override
     public java.util.concurrent.CompletableFuture<dev.jsinco.brewery.api.persistence.BreweryPersistenceSnapshot>
             inspectPersistedStructures(java.util.List<dev.jsinco.brewery.api.vector.BreweryLocation> keys) {

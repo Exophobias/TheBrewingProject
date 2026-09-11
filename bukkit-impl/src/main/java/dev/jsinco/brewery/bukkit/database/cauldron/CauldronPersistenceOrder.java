@@ -11,12 +11,51 @@ import java.util.function.Function;
 public final class CauldronPersistenceOrder {
     public static final int MAX_COORDINATES = 65_536;
     public static final int MAX_PENDING_PER_COORDINATE = 256;
+    public static final int MAX_INSPECTIONS = 8;
     public enum Write { INSERT, UPDATE, DELETE }
     public record Status(int coordinates, int pendingWrites, int failedCoordinates, int pausedWorlds, boolean stopped) { }
     private final Map<BreweryLocation, Lane> lanes = new HashMap<>();
     private final Map<UUID, Long> epochs = new HashMap<>();
     private final Set<UUID> paused = new HashSet<>();
     private boolean stopped;
+    private long revision;
+    private int inspections;
+
+    /** Captures original admitted tails; cancellation of a consumer future never drains them. */
+    public synchronized Observation observe(List<BreweryLocation> requested) {
+        var keys = dev.jsinco.brewery.api.persistence.CauldronPersistenceSnapshot.validateKeys(requested);
+        UUID world = keys.getFirst().worldUuid();
+        if (stopped || paused.contains(world) || inspections >= MAX_INSPECTIONS)
+            throw new IllegalStateException("Cauldron observation is unavailable or at capacity");
+        var tails = keys.stream().map(lanes::get).filter(Objects::nonNull)
+                .map(lane -> lane.tail).toArray(CompletableFuture[]::new);
+        inspections++;
+        return new Observation(keys, world, revision, CompletableFuture.allOf(tails));
+    }
+
+    public final class Observation {
+        private final UUID world;
+        private final List<BreweryLocation> keys;
+        private final long capturedRevision;
+        private final CompletableFuture<Void> ready;
+        private boolean released;
+        private Observation(List<BreweryLocation> keys, UUID world, long capturedRevision, CompletableFuture<Void> ready) {
+            this.keys = keys; this.world = world; this.capturedRevision = capturedRevision; this.ready = ready;
+        }
+        public void requireKeys(List<BreweryLocation> requested) {
+            if (!keys.equals(requested)) throw new IllegalArgumentException("Observation keys changed");
+        }
+        public CompletableFuture<Void> ready() { return ready.copy(); }
+        public boolean current() { synchronized (CauldronPersistenceOrder.this) {
+            return !stopped && !paused.contains(world) && capturedRevision == revision;
+        } }
+        public void requireCurrent() {
+            if (!current()) throw new IllegalStateException("Cauldron observation has a stale owner revision");
+        }
+        public void release() { synchronized (CauldronPersistenceOrder.this) {
+            if (!released) { released = true; inspections--; }
+        } }
+    }
 
     public final class Owner {
         private final BreweryLocation position;
@@ -87,6 +126,7 @@ public final class CauldronPersistenceOrder {
             previous = lane.tail;
             lane.tail = admitted;
             lane.pending++;
+            revision = Math.incrementExact(revision);
             if (kind == Write.DELETE) { owner.terminal = true; owner.deletion = admitted; }
         }
         try {
@@ -126,11 +166,14 @@ public final class CauldronPersistenceOrder {
     }
 
     public synchronized void invalidate(UUID world) {
+        revision = Math.incrementExact(revision);
         epochs.put(world, Math.incrementExact(epoch(world)));
         paused.add(world);
         lanes.forEach((key, lane) -> { if (key.worldUuid().equals(world)) lane.owner.revoked = true; });
     }
     public synchronized void invalidateAll() {
+        // A cold absent-key inspection need not have any runtime owner/epoch yet.
+        revision = Math.incrementExact(revision);
         Set<UUID> worlds = new HashSet<>(epochs.keySet());
         lanes.keySet().forEach(key -> worlds.add(key.worldUuid()));
         worlds.forEach(this::invalidate);

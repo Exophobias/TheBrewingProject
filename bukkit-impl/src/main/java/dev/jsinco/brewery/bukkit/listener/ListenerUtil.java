@@ -10,6 +10,29 @@ import org.jspecify.annotations.NonNull;
 
 public class ListenerUtil {
 
+    /** Exact native teardown, returning the original ordered SQL acknowledgment rather than a boolean. */
+    public static java.util.concurrent.CompletableFuture<Void> retireCauldron(
+            TheBrewingProject provider, BukkitCauldron cauldron) throws PersistenceException {
+        if (!org.bukkit.Bukkit.isPrimaryThread() || provider != TheBrewingProject.getInstance() || !provider.isEnabled()
+                || org.bukkit.Bukkit.getServicesManager().load(dev.jsinco.brewery.bukkit.api.TheBrewingProjectApi.class) != provider)
+            throw new IllegalStateException("Cauldron provider changed");
+        var registry = provider.getBreweryRegistry();
+        var database = provider.getDatabase();
+        cauldron.persistenceOwner(provider.getCauldronPersistenceOrder());
+        if (!isCurrent(cauldron) || !mayRemove(cauldron, null))
+            throw new IllegalStateException("Cauldron holder is stale or unavailable");
+        cauldron.destroy();
+        // Display teardown invokes external callbacks. Revalidate every owner before any SQL mutation.
+        if (provider != TheBrewingProject.getInstance() || !provider.isEnabled()
+                || provider.getDatabase() != database
+                || org.bukkit.Bukkit.getServicesManager().load(dev.jsinco.brewery.bukkit.api.TheBrewingProjectApi.class) != provider
+                || !isCurrent(cauldron) || !mayRemove(cauldron, null))
+            throw new IllegalStateException("Cauldron ownership changed during teardown");
+        var original = database.startSession(SessionTypes.CAULDRON_SESSION_TYPE).removeCauldron(cauldron);
+        if (!original.isCompletedExceptionally()) registry.removeActiveSinglePositionStructure(cauldron);
+        return original;
+    }
+
     public static void removeActiveSinglePositionStructure(@NonNull SinglePositionStructure structure) {
         removeIfCurrent(structure);
     }
