@@ -33,6 +33,16 @@ public interface ItemIntegration extends Integration {
     }
 
     /**
+     * Scales durations of beneficial, non-instant potion effects on a newly rendered brew.
+     * Implementations must independently validate any reward entitlement; unfinished and
+     * ineligible brews must return 1. Harmful effects, amplifiers and drunken modifiers
+     * are never scaled. The largest valid multiplier wins when several integrations apply.
+     */
+    default double beneficialEffectDurationMultiplier(@NonNull Brew brew) {
+        return 1D;
+    }
+
+    /**
      * Creates an ItemStack from the given item identifier
      */
     Optional<ItemStack> createItem(String id);

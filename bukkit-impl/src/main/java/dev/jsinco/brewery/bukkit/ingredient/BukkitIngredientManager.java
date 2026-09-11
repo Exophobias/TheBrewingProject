@@ -76,12 +76,7 @@ public class BukkitIngredientManager implements IngredientManager<ItemStack> {
             case SimpleIngredient(Material material) -> Optional.of(material.asItemType().createItemStack());
             case BreweryIngredient(BreweryKey breweryKey) ->
                     TheBrewingProject.getInstance().getRecipeRegistry().getRecipe(breweryKey.minimalized())
-                            .map(recipe -> {
-                                RecipeResult<ItemStack> result = recipe.getRecipeResult(BrewQuality.quality(score).orElse(null));
-                                ItemStack itemStack = result.newLorelessItem();
-                                itemStack.editPersistentDataContainer(pdc -> BrewAdapterAccess.applyBrewTags(pdc, recipe, score, ""));
-                                return itemStack;
-                            });
+                            .map(recipe -> dev.jsinco.brewery.bukkit.recipe.BrewRecognition.ingredientItem(recipe, score));
             case PluginIngredient pluginIngredient ->
                     pluginIngredient.itemIntegration().createItem(pluginIngredient.key().key());
             default -> Optional.empty();

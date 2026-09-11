@@ -5,6 +5,7 @@ import dev.jsinco.brewery.api.integration.IntegrationType;
 public class IntegrationTypes {
 
     public static IntegrationType<ItemIntegration> ITEM = new IntegrationType<>(ItemIntegration.class, "item");
+    public static IntegrationType<RecipeScoreIntegration> RECIPE_SCORE = new IntegrationType<>(RecipeScoreIntegration.class, "recipe_score");
     public static IntegrationType<StructureIntegration> STRUCTURE = new IntegrationType<>(StructureIntegration.class, "structure");
     public static IntegrationType<PlaceholderIntegration> PLACEHOLDER = new IntegrationType<>(PlaceholderIntegration.class, "placeholder");
     public static IntegrationType<ChestShopIntegration> CHEST_SHOP = new IntegrationType<>(ChestShopIntegration.class, "chest_shop");

@@ -432,7 +432,8 @@ public class BukkitCauldron implements Cauldron {
     }
 
     private void recalculateColor() {
-        Optional<Recipe<ItemStack>> recipeOptional = matcherResult.recipeMatch();
+        Optional<Recipe<ItemStack>> recipeOptional = matcherResult.recipeMatch()
+                .filter(ignored -> dev.jsinco.brewery.bukkit.recipe.BrewRecognition.recognized(matcherResult.score()));
         Color resultColor = computeResultColor(recipeOptional);
         Color baseParticleColor = computeBaseParticleColor(getBlock());
         this.particleColor = recipeOptional.map(recipe -> computeParticleColor(baseParticleColor, resultColor, recipe))
@@ -446,12 +447,13 @@ public class BukkitCauldron implements Cauldron {
                 block.getLocation().add(0.5 + (RANDOM.nextDouble() * 0.8 - 0.4), 0.9, 0.5 + (RANDOM.nextDouble() * 0.8 - 0.4));
         double progress;
         if (brew.lastStep() instanceof BrewingStep.TimedStep timedStep) {
-            Optional<Recipe<ItemStack>> recipeOptional = matcherResult.recipeMatch();
+            Optional<Recipe<ItemStack>> recipeOptional = matcherResult.recipeMatch()
+                    .filter(ignored -> dev.jsinco.brewery.bukkit.recipe.BrewRecognition.recognized(matcherResult.score()));
             if (recipeOptional.isPresent() && brew.stepAmount() - 1 < recipeOptional.get().getSteps().size()
                     && recipeOptional.get().getSteps().get(brew.stepAmount() - 1) instanceof BrewingStep.TimedStep expectedTimed) {
                 progress = (double) timedStep.time().moment() / expectedTimed.time().moment();
             } else {
-                progress = Math.min((double) timedStep.time().moment() / Moment.MINUTE * 3, 1);
+                progress = Math.min((double) timedStep.time().moment() / (Moment.MINUTE * 3), 1);
             }
         } else {
             progress = 1D; // Shouldn't happen
@@ -459,7 +461,9 @@ public class BukkitCauldron implements Cauldron {
         List<ParticleDefinition> definitions = hot ? Config.config().cauldrons().cookParticleDefinitions() : Config.config().cauldrons().mixParticleDefinitions();
         definitions.stream()
                 .filter(particleDefinition -> particleDefinition.range() == null || particleDefinition.range().isWithin(progress))
-                .filter(particleDefinition -> particleDefinition.quality() == null || particleDefinition.quality().equals(matcherResult.quality().orElse(null)))
+                .filter(particleDefinition -> particleDefinition.quality() == null
+                        || dev.jsinco.brewery.bukkit.recipe.BrewRecognition.recognized(matcherResult.score())
+                        && particleDefinition.quality().equals(matcherResult.quality().orElse(null)))
                 .filter(particleDefinition -> particleDefinition.probability() > RANDOM.nextDouble())
                 .map(ParticleDefinition::particleKey)
                 .map(BukkitAdapter::toNamespacedKey)

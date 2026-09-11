@@ -30,7 +30,9 @@ public class BrewMigrationListener implements Listener {
     private static Optional<ItemStack> migrateItemStack(@Nullable ItemStack item) {
         if (item == null || item.isEmpty()) return Optional.empty();
         Optional<Brew> brewOptional = BrewAdapterAccess.fromItem(item);
-        return brewOptional.map(brew -> BrewAdapterAccess.toItem(brew, new Brew.State.Other()));
+        return brewOptional.map(brew -> BrewAdapterAccess.toItem(brew, new Brew.State.Other()))
+                .or(() -> dev.jsinco.brewery.bukkit.recipe.BrewRecognition.refreshLegacySealed(item,
+                        dev.jsinco.brewery.bukkit.TheBrewingProject.getInstance().getRecipeRegistry()));
     }
 
     @EventHandler(ignoreCancelled = true)

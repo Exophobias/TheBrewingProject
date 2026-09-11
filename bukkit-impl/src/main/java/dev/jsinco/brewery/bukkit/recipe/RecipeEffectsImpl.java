@@ -3,6 +3,8 @@ package dev.jsinco.brewery.bukkit.recipe;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableMap;
 import dev.jsinco.brewery.api.effect.DrunkState;
+import dev.jsinco.brewery.api.brew.Brew;
+import dev.jsinco.brewery.api.moment.Interval;
 import dev.jsinco.brewery.api.effect.ModifierConsume;
 import dev.jsinco.brewery.api.effect.modifier.DrunkenModifier;
 import dev.jsinco.brewery.api.effect.modifier.ModifierDisplay;
@@ -14,6 +16,7 @@ import dev.jsinco.brewery.api.util.BreweryKey;
 import dev.jsinco.brewery.api.util.Holder;
 import dev.jsinco.brewery.bukkit.TheBrewingProject;
 import dev.jsinco.brewery.bukkit.api.BukkitAdapter;
+import dev.jsinco.brewery.bukkit.api.integration.IntegrationTypes;
 import dev.jsinco.brewery.bukkit.effect.ConsumedModifierDisplay;
 import dev.jsinco.brewery.bukkit.effect.ModifierConsumePdcType;
 import dev.jsinco.brewery.bukkit.util.BukkitMessageUtil;
@@ -32,6 +35,7 @@ import org.bukkit.entity.Projectile;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.persistence.PersistentDataContainer;
 import org.bukkit.persistence.PersistentDataType;
+import org.bukkit.potion.PotionEffectTypeCategory;
 import org.jspecify.annotations.NonNull;
 import org.jspecify.annotations.Nullable;
 
@@ -53,7 +57,7 @@ public class RecipeEffectsImpl implements RecipeEffects {
     public static final NamespacedKey MODIFIERS = TheBrewingProject.key("modifiers");
     public static final NamespacedKey EVENTS = TheBrewingProject.key("events");
     public static final NamespacedKey EFFECTS = TheBrewingProject.key("effects");
-    private static final List<NamespacedKey> PDC_TYPES = List.of(COMMANDS, MESSAGE, ACTION_BAR, TITLE, ALCOHOL, TOXINS, EVENTS);
+    private static final List<NamespacedKey> PDC_TYPES = List.of(COMMANDS, MESSAGE, ACTION_BAR, TITLE, ALCOHOL, TOXINS, EVENTS, MODIFIERS, EFFECTS);
 
     public static final RecipeEffectsImpl GENERIC = new Builder()
             .effects(List.of())
@@ -86,6 +90,40 @@ public class RecipeEffectsImpl implements RecipeEffects {
 
     public void applyTo(ItemStack itemStack) {
         itemStack.editPersistentDataContainer(this::applyTo);
+    }
+
+    public RecipeEffectsImpl withoutMessages() {
+        return new RecipeEffectsImpl(effects, null, null, null, events, modifiers);
+    }
+
+    /** Apply a reward to freshly rendered base effects, once, before the item is sealed. */
+    public static void applyBrewDurationReward(ItemStack itemStack, Brew brew) {
+        double multiplier = TheBrewingProject.getInstance().getIntegrationManager()
+                .retrieve(IntegrationTypes.ITEM).stream()
+                .filter(dev.jsinco.brewery.api.integration.Integration::isEnabled)
+                .mapToDouble(integration -> integration.beneficialEffectDurationMultiplier(brew))
+                .filter(value -> Double.isFinite(value) && value >= 1D)
+                .max().orElse(1D);
+        if (multiplier == 1D) return;
+        fromItem(itemStack).map(effects -> effects.withBeneficialDurationMultiplier(multiplier))
+                .ifPresent(effects -> effects.applyTo(itemStack));
+    }
+
+    RecipeEffectsImpl withBeneficialDurationMultiplier(double multiplier) {
+        if (!Double.isFinite(multiplier) || multiplier < 1D) return this;
+        return new RecipeEffectsImpl(effects.stream().map(effect -> {
+            if (effect.type() == null || effect.type().isInstant()
+                    || effect.type().getCategory() != PotionEffectTypeCategory.BENEFICIAL
+                    || effect.durationRange().start() < 0) return effect;
+            return new RecipeEffectImpl(effect.type(), new Interval(
+                    scaledDuration(effect.durationRange().start(), multiplier),
+                    scaledDuration(effect.durationRange().stop(), multiplier)), effect.amplifierRange());
+        }).toList(), title, message, actionBar, events, modifiers);
+    }
+
+    private static long scaledDuration(long ticks, double multiplier) {
+        // RecipeEffectImpl samples an inclusive int interval; leave room for stop + 1.
+        return Math.min(Integer.MAX_VALUE - 1L, Math.round(ticks * multiplier));
     }
 
     private void applyTo(PersistentDataContainer container) {

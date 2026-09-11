@@ -84,7 +84,15 @@ public class BukkitRecipeResult implements RecipeResult<ItemStack> {
     @Override
     public ItemStack newBrewItem(@NonNull BrewScore score, @NonNull Brew brew, Brew.@NonNull State state) {
         ItemStack itemStack = newLorelessItem();
-        applyLore(itemStack, score, brew, state);
+        if (BrewRecognition.recognized(score)) {
+            applyLore(itemStack, score, brew, state);
+            RecipeEffectsImpl.applyBrewDurationReward(itemStack, brew);
+        } else {
+            itemStack = new ItemStack(Material.POTION);
+            if (score.completed()) recipeEffects().withoutMessages().applyTo(itemStack);
+            BrewAdapterAccess.hideTooltips(itemStack);
+            BrewRecognition.anonymize(itemStack, score);
+        }
         return itemStack;
     }
 

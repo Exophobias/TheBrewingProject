@@ -1,16 +1,20 @@
 package dev.jsinco.brewery.bukkit.recipe;
 
 import dev.jsinco.brewery.api.brew.Brew;
+import dev.jsinco.brewery.api.brew.BrewScore;
+import dev.jsinco.brewery.api.brew.BrewingStep;
 import dev.jsinco.brewery.api.recipe.Recipe;
 import dev.jsinco.brewery.api.recipe.RecipeMatcher;
 import dev.jsinco.brewery.api.recipe.RecipeMatcherResult;
 import dev.jsinco.brewery.api.recipe.RecipeRegistry;
 import dev.jsinco.brewery.bukkit.TheBrewingProject;
+import dev.jsinco.brewery.bukkit.api.integration.IntegrationTypes;
 import dev.jsinco.brewery.recipes.BrewScoreImpl;
 import org.bukkit.inventory.ItemStack;
 import org.jspecify.annotations.Nullable;
 
 import java.util.Comparator;
+import java.util.List;
 import java.util.Set;
 
 public record RecipeMatcherImpl(@Nullable Set<Recipe<ItemStack>> whitelist,
@@ -29,7 +33,7 @@ public record RecipeMatcherImpl(@Nullable Set<Recipe<ItemStack>> whitelist,
                                         recipe,
                                         variation,
                                         brew,
-                                        MetaScoreModifier.apply(brew, recipe.score(variation))
+                                        integratedScore(brew, recipe, variation)
                                 ))
                 )
                 .filter(pair -> pair.score().rawScore() > 0)
@@ -40,6 +44,17 @@ public record RecipeMatcherImpl(@Nullable Set<Recipe<ItemStack>> whitelist,
                         brew,
                         BrewScoreImpl.failed(brew.getCompletedSteps())
                 ));
+    }
+
+    private static BrewScore integratedScore(Brew brew, Recipe<ItemStack> recipe, List<BrewingStep> steps) {
+        BrewScore score = recipe.score(steps);
+        for (var integration : TheBrewingProject.getInstance().getIntegrationManager()
+                .retrieve(IntegrationTypes.RECIPE_SCORE)) {
+            if (!integration.isEnabled()) continue;
+            score = java.util.Objects.requireNonNull(integration.score(brew, recipe, steps, score),
+                    "Recipe score integrations must return a score");
+        }
+        return MetaScoreModifier.apply(brew, score);
     }
 
     public static BuilderImpl builder() {
