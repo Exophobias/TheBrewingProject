@@ -11,7 +11,8 @@ import dev.jsinco.brewery.bukkit.ingredient.ResolvedIngredientManagerImpl;
 import dev.jsinco.brewery.bukkit.structure.PlacedBreweryStructure;
 import dev.jsinco.brewery.bukkit.structure.StructurePlacerUtils;
 import dev.jsinco.brewery.database.PersistenceException;
-import dev.jsinco.brewery.util.FileUtil;
+import dev.jsinco.brewery.database.sql.DatabaseDriver;
+import dev.jsinco.brewery.database.sql.SqlDatabase;
 import org.bukkit.Location;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -50,12 +51,12 @@ class SqLiteBarrelSessionTest {
         barrel = new BukkitBarrel(new Location(world, -3, 1, 1), found, 9, type);
         found.setHolder(barrel);
         barrel.getInventory().set(brew(3), 1);
-        jdbc = "jdbc:sqlite:" + directory.resolve("barrels.db");
-        try (var connection = connection(); var statement = connection.createStatement()) {
-            for (String sql : FileUtil.readInternalResource("/database/sqlite/create_all_tables.sql").split(";")) {
-                if (!sql.isBlank()) statement.execute(sql);
-            }
-        }
+        // Whole-world hydration must read the actual current schema, including empty cauldrons.
+        // The raw create_all_tables resource is the legacy migration starting point.
+        var database = new SqlDatabase(DatabaseDriver.SQLITE);
+        try { database.init(directory.toFile()); }
+        finally { database.close().join(); }
+        jdbc = "jdbc:sqlite:" + directory.resolve("brewery.db");
         session = new SqLiteBarrelSession(Runnable::run, this::connection, CompletableFuture.completedFuture(ingredients));
     }
 
