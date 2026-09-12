@@ -22,7 +22,7 @@ class SqLiteCauldronInspectionTest {
         jdbc = "jdbc:sqlite:" + directory.resolve("inspection.db");
         try (var c = DriverManager.getConnection(jdbc); var s = c.createStatement()) {
             // No PK allows reproducing duplicate physical rows, which must never imply absence.
-            s.execute("CREATE TABLE cauldrons(cauldron_x INTEGER,cauldron_y INTEGER,cauldron_z INTEGER,world_uuid BLOB,brew TEXT,cauldron_type TEXT)");
+            s.execute("CREATE TABLE cauldrons(cauldron_x INTEGER,cauldron_y INTEGER,cauldron_z INTEGER,world_uuid BLOB,brew TEXT,cauldron_type TEXT,birth_uuid BLOB)");
         }
     }
     private SqLiteCauldronInspectionSession session() {
@@ -31,11 +31,14 @@ class SqLiteCauldronInspectionTest {
             catch (java.sql.SQLException e) { throw new dev.jsinco.brewery.database.PersistenceException(e); }
         });
     }
-    private void row(BreweryLocation at, String brew, String type) throws Exception {
-        try (var c = DriverManager.getConnection(jdbc); var s = c.prepareStatement("INSERT INTO cauldrons VALUES(?,?,?,?,?,?)")) {
+    private UUID row(BreweryLocation at, String brew, String type) throws Exception {
+        UUID birth = UUID.randomUUID();
+        try (var c = DriverManager.getConnection(jdbc); var s = c.prepareStatement("INSERT INTO cauldrons VALUES(?,?,?,?,?,?,?)")) {
             s.setInt(1, at.x()); s.setInt(2, at.y()); s.setInt(3, at.z());
-            s.setBytes(4, DecoderEncoder.asBytes(at.worldUuid())); s.setString(5, brew); s.setString(6, type); s.executeUpdate();
+            s.setBytes(4, DecoderEncoder.asBytes(at.worldUuid())); s.setString(5, brew); s.setString(6, type);
+            s.setBytes(7, DecoderEncoder.asBytes(birth)); s.executeUpdate();
         }
+        return birth;
     }
     private void pump() { while (!tasks.isEmpty()) tasks.removeFirst().run(); }
     private CompletableFuture<CauldronPersistenceSnapshot> read(List<BreweryLocation> keys) {
@@ -43,13 +46,29 @@ class SqLiteCauldronInspectionTest {
         return session().inspect(keys, observation).whenComplete((value, failure) -> observation.release());
     }
 
+    @Test void missingMalformedAndDuplicatedBirthsRefuseEvidenceInsteadOfImplyingAbsence() throws Exception {
+        row(key, "same brew", "water");
+        for (String invalid : List.of("NULL", "X'01'", "'0011223344556677'", "zeroblob(17)")) {
+            try (var c = DriverManager.getConnection(jdbc); var s = c.createStatement()) {
+                s.executeUpdate("UPDATE cauldrons SET birth_uuid=" + invalid);
+            }
+            var failed = read(List.of(key)); pump(); assertThrows(CompletionException.class, failed::join);
+        }
+        var second = new BreweryLocation(2, 64, 3, key.worldUuid()); row(second, "same brew", "water");
+        try (var c = DriverManager.getConnection(jdbc); var s = c.createStatement()) {
+            s.executeUpdate("UPDATE cauldrons SET birth_uuid=X'00112233445566778899aabbccddeeff'");
+        }
+        var failed = read(List.of(key, second)); pump(); assertThrows(CompletionException.class, failed::join);
+        assertTrue(new CauldronPersistenceSnapshot.Row("older provider", Optional.empty()).birthUuid().isEmpty());
+    }
+
     @Test void exactRowsRetainUnknownSerializationLegacyNullTypeAndForeignControl() throws Exception {
         var foreign = new BreweryLocation(1, 64, 3, UUID.randomUUID());
         var absent = new BreweryLocation(2, 64, 3, key.worldUuid());
-        row(key, "{\"future\":\"\\u2603\",\"nested\":[1,2]}", null); row(foreign, "untouched", "future-type");
+        UUID birth = row(key, "{\"future\":\"\\u2603\",\"nested\":[1,2]}", null); row(foreign, "untouched", "future-type");
         var result = read(List.of(key, absent)); pump();
         assertEquals(List.of(new CauldronPersistenceSnapshot.Entry(key, Optional.of(new CauldronPersistenceSnapshot.Row(
-                "{\"future\":\"\\u2603\",\"nested\":[1,2]}", Optional.empty()))),
+                "{\"future\":\"\\u2603\",\"nested\":[1,2]}", Optional.empty(), Optional.of(birth)))),
                 new CauldronPersistenceSnapshot.Entry(absent, Optional.empty())), result.join().entries());
         var control = read(List.of(foreign)); pump();
         assertEquals("untouched", control.join().entries().getFirst().row().orElseThrow().serializedBrew());

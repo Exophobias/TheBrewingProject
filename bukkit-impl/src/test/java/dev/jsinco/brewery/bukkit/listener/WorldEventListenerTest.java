@@ -158,7 +158,7 @@ class WorldEventListenerTest {
                 List.of(new BarrelRow(structure("small_barrel", 20), "oak", 9, List.of(new BrewRow(3, false, brew())))),
                 List.of(new DistilleryRow(structure("bamboo_distillery", 80), 4294967299L,
                         List.of(new BrewRow(1, false, brew()), new BrewRow(2, true, brew())))),
-                List.of(new CauldronRow(new BreweryLocation(140, 65, 140, world.getUID()), "water", brew())));
+                List.of(new CauldronRow(new BreweryLocation(140, 65, 140, world.getUID()), "water", brew(), java.util.UUID.randomUUID())));
     }
 
     private StructureRow structure(String name, int coordinate) {

@@ -148,7 +148,7 @@ class CauldronPersistenceReceiptTest {
         String before = row(control);
         try (var c = plugin.getDatabase().getConnection(); var s = c.createStatement()) {
             s.execute("CREATE TRIGGER replace_deleted_cauldron AFTER DELETE ON cauldrons WHEN OLD.cauldron_x=1 "
-                    + "BEGIN INSERT INTO cauldrons VALUES(OLD.cauldron_x,OLD.cauldron_y,OLD.cauldron_z,OLD.world_uuid,'foreign-after-delete','water'); END");
+                    + "BEGIN INSERT INTO cauldrons(cauldron_x,cauldron_y,cauldron_z,world_uuid,brew,cauldron_type,birth_uuid) VALUES(OLD.cauldron_x,OLD.cauldron_y,OLD.cauldron_z,OLD.world_uuid,'foreign-after-delete','water',randomblob(16)); END");
         }
         var receipt = plugin.retireCauldron(owner); await(receipt);
         assertTrue(receipt.deletionAcknowledged()); assertEquals(CauldronPersistenceReceipt.State.FAILED, receipt.state());

@@ -53,17 +53,22 @@ public record SqLiteWorldHydrationSession(Executor executor,
                         }
                     }
                     List<CauldronRow> cauldrons = new ArrayList<>();
-                    try (var statement = connection.prepareStatement("SELECT * FROM cauldrons WHERE world_uuid = ?")) {
+                    try (var statement = connection.prepareStatement("SELECT cauldron_x,cauldron_y,cauldron_z,cauldron_type,brew,birth_uuid,"
+                            + "length(birth_uuid) AS birth_length,typeof(birth_uuid) AS birth_type FROM cauldrons WHERE world_uuid = ?")) {
                         statement.setBytes(1, DecoderEncoder.asBytes(worldId));
                         try (var rows = statement.executeQuery()) {
                             while (rows.next()) {
+                                if (rows.getLong("birth_length") != 16 || !"blob".equals(rows.getString("birth_type")))
+                                    throw new SQLException("Invalid persisted cauldron birth");
                                 cauldrons.add(new CauldronRow(location(rows, "cauldron", worldId),
-                                        rows.getString("cauldron_type"), rows.getString("brew")));
+                                        rows.getString("cauldron_type"), rows.getString("brew"),
+                                        DecoderEncoder.asUuid(rows.getBytes("birth_uuid"))));
                             }
                         }
                     }
+                    var snapshot = new WorldBrewerySnapshot(barrels, distilleries, cauldrons);
                     connection.commit();
-                    return new WorldBrewerySnapshot(barrels, distilleries, cauldrons);
+                    return snapshot;
                 } catch (SQLException | RuntimeException failure) {
                     try { connection.rollback(); } catch (SQLException rollback) { failure.addSuppressed(rollback); }
                     throw failure;

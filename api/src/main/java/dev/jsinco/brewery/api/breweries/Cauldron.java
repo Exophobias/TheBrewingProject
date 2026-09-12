@@ -5,8 +5,12 @@ import dev.jsinco.brewery.api.structure.SinglePositionStructure;
 import org.jspecify.annotations.NonNull;
 
 import java.util.Optional;
+import java.util.UUID;
 
 public interface Cauldron extends Tickable, SinglePositionStructure, SelfSchedulingBrewery {
+
+    /** Durable ordinary-row identity, not fixture or cleanup authority. Empty means unsupported. */
+    default Optional<UUID> birthUuid() { return Optional.empty(); }
 
     /**
      * @return The brew time in ticks

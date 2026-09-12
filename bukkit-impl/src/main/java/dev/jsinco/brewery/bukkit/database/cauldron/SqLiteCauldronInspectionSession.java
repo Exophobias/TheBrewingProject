@@ -9,6 +9,7 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.HashSet;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
@@ -30,16 +31,19 @@ public record SqLiteCauldronInspectionSession(Executor executor, PersistenceSupp
                 connection.setAutoCommit(false);
                 try {
                     var entries = new ArrayList<CauldronPersistenceSnapshot.Entry>();
+                    var births = new HashSet<java.util.UUID>();
                     int budget = MAX_TEXT_CHARS;
                     long byteBudget = MAX_TEXT_BYTES;
                     for (var key : keys) {
-                        try (var statement = connection.prepareStatement("SELECT brew,cauldron_type,length(CAST(brew AS BLOB)),length(CAST(cauldron_type AS BLOB)) "
+                        try (var statement = connection.prepareStatement("SELECT brew,cauldron_type,length(CAST(brew AS BLOB)),length(CAST(cauldron_type AS BLOB)),birth_uuid,length(birth_uuid),typeof(birth_uuid) "
                                 + "FROM cauldrons WHERE cauldron_x=? AND cauldron_y=? AND cauldron_z=? AND world_uuid=? LIMIT 2")) {
                             statement.setInt(1, key.x()); statement.setInt(2, key.y()); statement.setInt(3, key.z());
                             statement.setBytes(4, DecoderEncoder.asBytes(key.worldUuid()));
                             try (var rows = statement.executeQuery()) {
                                 Optional<CauldronPersistenceSnapshot.Row> row = Optional.empty();
                                 if (rows.next()) {
+                                    if (rows.getLong(6) != 16 || !"blob".equals(rows.getString(7)))
+                                        throw new SQLException("Invalid persisted cauldron birth");
                                     long length = rows.getLong(3);
                                     if (rows.wasNull() || length < 0 || length > byteBudget) throw new SQLException("Invalid cauldron brew byte length");
                                     long typeLength = rows.getLong(4);
@@ -53,7 +57,9 @@ public record SqLiteCauldronInspectionSession(Executor executor, PersistenceSupp
                                     long characters = (long) text.length() + (type == null ? 0 : ((String) type).length());
                                     if (characters > budget) throw new SQLException("Cauldron text budget exceeded");
                                     budget -= (int) characters;
-                                    row = Optional.of(new CauldronPersistenceSnapshot.Row(text, Optional.ofNullable((String) type)));
+                                    var birth = DecoderEncoder.asUuid(rows.getBytes(5));
+                                    if (!births.add(birth)) throw new SQLException("Duplicate persisted cauldron birth");
+                                    row = Optional.of(new CauldronPersistenceSnapshot.Row(text, Optional.ofNullable((String) type), Optional.of(birth)));
                                     if (rows.next()) throw new SQLException("Duplicate cauldron rows at an exact key");
                                 }
                                 entries.add(new CauldronPersistenceSnapshot.Entry(key, row));

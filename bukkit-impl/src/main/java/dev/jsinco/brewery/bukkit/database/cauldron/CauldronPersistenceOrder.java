@@ -7,7 +7,7 @@ import java.util.concurrent.CompletionException;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 
-/** Runtime/database-lifetime ordering only. No durable generation or serving ownership is implied. */
+/** Runtime ordering of exact durable ordinary births. Birth identity grants no fixture or serving ownership. */
 public final class CauldronPersistenceOrder {
     public static final int MAX_COORDINATES = 65_536;
     public static final int MAX_PENDING_PER_COORDINATE = 256;
@@ -60,12 +60,18 @@ public final class CauldronPersistenceOrder {
     public final class Owner {
         private final BreweryLocation position;
         private final long epoch;
+        private final UUID birthUuid;
+        private final Hydration hydration;
         private boolean revoked, terminal;
         private Throwable failure;
         private CompletableFuture<Void> deletion;
-        private Owner(BreweryLocation position, long epoch) { this.position = position; this.epoch = epoch; }
+        private Owner(BreweryLocation position, long epoch, UUID birthUuid, Hydration hydration) {
+            this.position = position; this.epoch = epoch; this.birthUuid = Objects.requireNonNull(birthUuid);
+            this.hydration = hydration;
+        }
         private CauldronPersistenceOrder order() { return CauldronPersistenceOrder.this; }
         public BreweryLocation position() { return position; }
+        public UUID birthUuid() { return birthUuid; }
         public boolean writable() { synchronized (CauldronPersistenceOrder.this) { return available(this); } }
         public boolean failed() { synchronized (CauldronPersistenceOrder.this) { return failure != null; } }
         public CompletableFuture<Void> barrier() { synchronized (CauldronPersistenceOrder.this) {
@@ -87,7 +93,7 @@ public final class CauldronPersistenceOrder {
         Objects.requireNonNull(position);
         if (stopped) throw new IllegalStateException("Cauldron persistence is stopping");
         epochs.putIfAbsent(position.worldUuid(), 0L);
-        return new Owner(position, epoch(position.worldUuid()));
+        return new Owner(position, epoch(position.worldUuid()), UUID.randomUUID(), null);
     }
 
     private long epoch(UUID world) { return epochs.getOrDefault(world, 0L); }
@@ -95,6 +101,7 @@ public final class CauldronPersistenceOrder {
         if (owner.order() != this || stopped || owner.revoked || owner.terminal || owner.failure != null
                 || paused.contains(owner.position.worldUuid()) || owner.epoch != epoch(owner.position.worldUuid())) return false;
         Lane lane = lanes.get(owner.position);
+        if (owner.hydration != null && (lane == null || lane.owner != owner)) return false;
         return lane == null || lane.failure == null && lane.pending < MAX_PENDING_PER_COORDINATE
                 && (lane.owner == owner || lane.owner.terminal);
     }
@@ -195,6 +202,16 @@ public final class CauldronPersistenceOrder {
             this.world = world; this.epoch = epoch; this.lifecycleCurrent = lifecycleCurrent;
         }
         public CompletableFuture<Void> drained() { return drained.copy(); }
+        public CauldronPersistenceOrder order() { return CauldronPersistenceOrder.this; }
+        /** Restore an exact persisted identity only inside this drained, unpublished lifecycle. */
+        public Owner restoreOwner(BreweryLocation position, UUID birthUuid) {
+            synchronized (CauldronPersistenceOrder.this) {
+                requireCurrent();
+                if (adopted || !world.equals(Objects.requireNonNull(position).worldUuid()))
+                    throw new IllegalStateException("Cauldron birth is outside its unpublished hydration");
+                return new Owner(position, epoch, birthUuid, this);
+            }
+        }
         private void requireCurrent() {
             if (stopped || epoch != CauldronPersistenceOrder.this.epoch(world) || !paused.contains(world)
                     || !lifecycleCurrent.getAsBoolean() || !drained.isDone() || drained.isCompletedExceptionally())
@@ -206,9 +223,12 @@ public final class CauldronPersistenceOrder {
                 requireCurrent();
                 if (adopted) throw new IllegalStateException("Cauldron hydration already adopted");
                 Set<BreweryLocation> keys = new HashSet<>();
+                Set<UUID> births = new HashSet<>();
+                lanes.forEach((key, lane) -> { if (!key.worldUuid().equals(world)) births.add(lane.owner.birthUuid); });
                 for (Owner owner : owners) {
                     if (owner.order() != CauldronPersistenceOrder.this || !world.equals(owner.position.worldUuid()) || owner.epoch != epoch || owner.revoked
-                            || owner.terminal || owner.failure != null || !keys.add(owner.position))
+                            || owner.hydration != this || owner.terminal || owner.failure != null
+                            || !keys.add(owner.position) || !births.add(owner.birthUuid))
                         throw new IllegalStateException("Invalid hydrated cauldron owner capability");
                 }
                 long elsewhere = lanes.keySet().stream().filter(key -> !key.worldUuid().equals(world)).count();

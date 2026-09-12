@@ -77,7 +77,8 @@ final class WorldBreweryHydrator {
             CauldronType type = row.type() == null ? fallback : Arrays.stream(CauldronType.values())
                     .filter(candidate -> candidate.key().equals(BreweryKey.parse(row.type())))
                     .findFirst().orElse(fallback);
-            stagedCauldrons.add(new BukkitCauldron(brew, row.location(), type));
+            stagedCauldrons.add(BukkitCauldron.hydrate(brew, row.location(), type,
+                    java.util.Objects.requireNonNull(cauldronHydration, "Cauldron hydration permit"), row.birthUuid()));
         }
         // Construction/deserialization/overlap checks finish before any holder becomes visible.
         if (cauldronHydration != null) cauldronHydration.adopt(stagedCauldrons.stream()

@@ -3,6 +3,9 @@ package dev.jsinco.brewery.bukkit.database.hydration;
 import dev.jsinco.brewery.api.vector.BreweryLocation;
 
 import java.util.List;
+import java.util.HashSet;
+import java.util.Objects;
+import java.util.UUID;
 
 /** Immutable database values. Reading a snapshot never resolves a Bukkit world or creates an inventory. */
 public record WorldBrewerySnapshot(List<BarrelRow> barrels, List<DistilleryRow> distilleries,
@@ -11,6 +14,12 @@ public record WorldBrewerySnapshot(List<BarrelRow> barrels, List<DistilleryRow> 
         barrels = List.copyOf(barrels);
         distilleries = List.copyOf(distilleries);
         cauldrons = List.copyOf(cauldrons);
+        var keys = new HashSet<BreweryLocation>();
+        var births = new HashSet<UUID>();
+        for (var row : cauldrons) {
+            if (!keys.add(row.location()) || !births.add(row.birthUuid()))
+                throw new IllegalArgumentException("Duplicate cauldron key or durable birth in world snapshot");
+        }
     }
 
     public record BrewRow(int position, boolean distillate, String serializedBrew) { }
@@ -26,5 +35,9 @@ public record WorldBrewerySnapshot(List<BarrelRow> barrels, List<DistilleryRow> 
         public DistilleryRow { brews = List.copyOf(brews); }
     }
 
-    public record CauldronRow(BreweryLocation location, String type, String serializedBrew) { }
+    public record CauldronRow(BreweryLocation location, String type, String serializedBrew, UUID birthUuid) {
+        public CauldronRow {
+            Objects.requireNonNull(location); Objects.requireNonNull(serializedBrew); Objects.requireNonNull(birthUuid);
+        }
+    }
 }

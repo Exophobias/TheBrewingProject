@@ -33,8 +33,10 @@ public record SqLiteCauldronSession(Executor executor, PersistenceSupplier<Conne
     }
 
     private CompletableFuture<Void> write(BukkitCauldron cauldron, CauldronPersistenceOrder.Write kind) {
-        return order.admit(cauldron.persistenceOwner(order), kind, predecessor -> {
-            BreweryLocation key = cauldron.position();
+        var owner = cauldron.persistenceOwner(order);
+        return order.admit(owner, kind, predecessor -> {
+            BreweryLocation key = owner.position();
+            byte[] birth = DecoderEncoder.asBytes(owner.birthUuid());
             String brew = kind == CauldronPersistenceOrder.Write.DELETE ? null
                     : BrewPersistenceSnapshot.captureNow(cauldron.getBrew());
             String type = kind == CauldronPersistenceOrder.Write.DELETE ? null
@@ -53,6 +55,7 @@ public record SqLiteCauldronSession(Executor executor, PersistenceSupplier<Conne
                     int offset = kind == CauldronPersistenceOrder.Write.UPDATE ? 2 : 0;
                     sql.setInt(offset + 1, key.x()); sql.setInt(offset + 2, key.y()); sql.setInt(offset + 3, key.z());
                     sql.setBytes(offset + 4, DecoderEncoder.asBytes(key.worldUuid()));
+                    sql.setBytes(kind == CauldronPersistenceOrder.Write.DELETE ? 5 : 7, birth);
                     if (kind != CauldronPersistenceOrder.Write.DELETE) {
                         sql.setString(kind == CauldronPersistenceOrder.Write.INSERT ? 5 : 1, brew);
                         sql.setString(kind == CauldronPersistenceOrder.Write.INSERT ? 6 : 2, type);

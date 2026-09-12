@@ -29,6 +29,8 @@ class SqLiteWorldHydrationSessionTest {
             for (String sql : FileUtil.readInternalResource("/database/sqlite/create_all_tables.sql").split(";")) {
                 if (!sql.isBlank()) statement.execute(sql);
             }
+            // Deliberately omit constraints to prove the reader rejects corrupt identity evidence.
+            statement.execute("ALTER TABLE cauldrons ADD COLUMN birth_uuid BLOB");
         }
         session = new SqLiteWorldHydrationSession(Runnable::run, this::connection);
     }
@@ -40,7 +42,7 @@ class SqLiteWorldHydrationSessionTest {
         insert("INSERT INTO barrel_brews VALUES (4,5,6,?, 8,'raw barrel brew')");
         insert("INSERT INTO distillery_brews VALUES (14,15,16,?, 0,0,'raw mixture brew')");
         insert("INSERT INTO distillery_brews VALUES (14,15,16,?, 0,1,'raw distillate brew')");
-        insert("INSERT INTO cauldrons VALUES (24,25,26,?,'raw cauldron brew','water')");
+        insert("INSERT INTO cauldrons VALUES (24,25,26,?,'raw cauldron brew','water',X'00112233445566778899aabbccddeeff')");
 
         var snapshot = session.readWorld(world).join();
         assertEquals(1, snapshot.barrels().size());
@@ -53,6 +55,7 @@ class SqLiteWorldHydrationSessionTest {
         assertEquals(2, still.brews().size());
         assertEquals(1, still.brews().stream().filter(WorldBrewerySnapshot.BrewRow::distillate).count());
         assertEquals("raw cauldron brew", snapshot.cauldrons().getFirst().serializedBrew());
+        assertEquals(UUID.fromString("00112233-4455-6677-8899-aabbccddeeff"), snapshot.cauldrons().getFirst().birthUuid());
         assertThrows(UnsupportedOperationException.class, () -> still.brews().clear());
         assertTrue(session.readWorld(UUID.randomUUID()).join().distilleries().isEmpty());
     }
@@ -82,6 +85,21 @@ class SqLiteWorldHydrationSessionTest {
         try (var connection = connection(); var statement = connection.createStatement()) {
             statement.execute("DROP TABLE cauldrons");
         }
+        assertThrows(CompletionException.class, () -> session.readWorld(world).join());
+    }
+
+    @Test void missingMalformedAndDuplicateBirthsRefuseTheWholeWorldSnapshot() throws Exception {
+        insert("INSERT INTO cauldrons VALUES(1,2,3,?,'same brew','water',NULL)");
+        for (String invalid : java.util.List.of("NULL", "X'01'", "'0011223344556677'", "zeroblob(17)")) {
+            try (var c = connection(); var s = c.createStatement()) { s.executeUpdate("UPDATE cauldrons SET birth_uuid=" + invalid); }
+            assertThrows(CompletionException.class, () -> session.readWorld(world).join());
+        }
+        try (var c = connection(); var s = c.createStatement()) {
+            s.executeUpdate("UPDATE cauldrons SET birth_uuid=X'00112233445566778899aabbccddeeff'");
+        }
+        insert("INSERT INTO cauldrons VALUES(2,2,3,?,'same brew','water',X'00112233445566778899aabbccddeeff')");
+        assertThrows(CompletionException.class, () -> session.readWorld(world).join());
+        try (var c = connection(); var s = c.createStatement()) { s.execute("ALTER TABLE cauldrons DROP COLUMN birth_uuid"); }
         assertThrows(CompletionException.class, () -> session.readWorld(world).join());
     }
 

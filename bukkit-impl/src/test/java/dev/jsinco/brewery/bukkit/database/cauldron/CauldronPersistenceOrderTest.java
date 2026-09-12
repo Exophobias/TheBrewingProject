@@ -57,9 +57,10 @@ class CauldronPersistenceOrderTest {
         var current = new AtomicBoolean(true);
         var hydration = order.beginHydration(world, current::get);
         assertFalse(hydration.drained().isDone()); assertFalse(old.writable()); assertFalse(detachedOld.writable());
-        var loaded = order.newOwner(key(1));
-        assertThrows(IllegalStateException.class, () -> hydration.adopt(List.of(loaded)));
+        assertThrows(IllegalStateException.class, () -> hydration.restoreOwner(key(1), old.birthUuid()));
         ingredients.complete(null); hydration.drained().join();
+        var loaded = hydration.restoreOwner(key(1), old.birthUuid());
+        assertEquals(old.birthUuid(), loaded.birthUuid());
         hydration.adopt(List.of(loaded)); assertFalse(loaded.writable());
         hydration.published(); assertTrue(loaded.writable());
         order.admit(loaded, CauldronPersistenceOrder.Write.UPDATE, p -> p).join();
@@ -69,14 +70,14 @@ class CauldronPersistenceOrderTest {
 
     @Test void staleOrForeignHydrationCannotAdoptAndFailedPublicationStaysPaused() {
         var first = order.beginHydration(world, () -> true);
-        var stale = order.newOwner(key(1));
+        var stale = first.restoreOwner(key(1), UUID.randomUUID());
         var second = order.beginHydration(world, () -> true);
         assertThrows(IllegalStateException.class, () -> first.adopt(List.of(stale)));
         assertThrows(IllegalStateException.class, () -> second.adopt(List.of(stale)));
         var foreign = new CauldronPersistenceOrder().newOwner(key(1));
         assertThrows(IllegalStateException.class, () -> second.adopt(List.of(foreign)));
         assertThrows(IllegalStateException.class, () -> insert(foreign));
-        var loaded = order.newOwner(key(1)); second.adopt(List.of(loaded));
+        var loaded = second.restoreOwner(key(1), UUID.randomUUID()); second.adopt(List.of(loaded));
         assertFalse(loaded.writable(), "Registry publication has not been acknowledged");
         order.invalidateAll(); assertThrows(IllegalStateException.class, second::published);
     }
@@ -100,5 +101,21 @@ class CauldronPersistenceOrderTest {
         assertThrows(IllegalStateException.class, () -> order.admit(owner, CauldronPersistenceOrder.Write.UPDATE, p -> p));
         assertEquals(256, order.status().pendingWrites());
         pending.complete(null); owner.barrier().join(); assertEquals(0, order.status().pendingWrites());
+    }
+
+    @Test void hydrationRejectsOrdinaryOwnersAndDuplicateOrMissingBirthsBeforeAnyPublication() {
+        var hydration = order.beginHydration(world, () -> true);
+        var ordinary = order.newOwner(key(1));
+        assertThrows(IllegalStateException.class, () -> hydration.adopt(List.of(ordinary)));
+        assertThrows(NullPointerException.class, () -> hydration.restoreOwner(key(1), null));
+        UUID birth = UUID.randomUUID();
+        var first = hydration.restoreOwner(key(1), birth);
+        var duplicate = hydration.restoreOwner(key(2), birth);
+        assertThrows(IllegalStateException.class, () -> hydration.adopt(List.of(first, duplicate)));
+        assertEquals(0, order.status().coordinates()); assertFalse(first.writable());
+        hydration.adopt(List.of(first)); hydration.published(); assertTrue(first.writable());
+        assertFalse(duplicate.writable(), "An unadopted restored birth never gains ordinary insert authority");
+        assertThrows(IllegalStateException.class, () -> insert(duplicate));
+        assertThrows(IllegalStateException.class, () -> hydration.restoreOwner(key(3), UUID.randomUUID()));
     }
 }

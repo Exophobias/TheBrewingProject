@@ -74,6 +74,7 @@ class CauldronPersistenceLifecycleTest {
         var loading = lifecycle.loadWorld(world); complete(loading);
         var loaded = (BukkitCauldron) plugin.getBreweryRegistry().getActiveSinglePositionStructure(owner.position()).orElseThrow();
         assertNotSame(owner, loaded); assertTrue(loaded.persistenceAvailable());
+        assertEquals(owner.birthUuid(), loaded.birthUuid(), "Unload/reload preserves the durable birth while revoking the old runtime owner");
         plugin.getDatabase().startSession(SessionTypes.CAULDRON_SESSION_TYPE).updateCauldron(loaded).join();
         assertThrows(IllegalStateException.class, () -> session.removeCauldron(owner));
         assertSame(loaded, plugin.getBreweryRegistry().getActiveSinglePositionStructure(owner.position()).orElseThrow());
@@ -90,6 +91,7 @@ class CauldronPersistenceLifecycleTest {
         ingredients.complete(plugin.getResolvedIngredientManager().join()); insertion.join(); complete(loading);
         var loaded = (BukkitCauldron) plugin.getBreweryRegistry().getActiveSinglePositionStructure(owner.position()).orElseThrow();
         assertNotSame(owner, loaded); assertTrue(loaded.persistenceAvailable());
+        assertEquals(owner.birthUuid(), loaded.birthUuid());
         assertThrows(IllegalStateException.class, () -> session.updateCauldron(owner));
     }
 

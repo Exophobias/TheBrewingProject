@@ -4,6 +4,7 @@ import dev.jsinco.brewery.api.vector.BreweryLocation;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.UUID;
 
 /** Exact SQL cauldron rows. This is neither a reservation nor proof of restart ownership. */
 public record CauldronPersistenceSnapshot(List<Entry> entries) {
@@ -18,7 +19,13 @@ public record CauldronPersistenceSnapshot(List<Entry> entries) {
         public Entry { Objects.requireNonNull(location); Objects.requireNonNull(row); }
     }
     /** Null cauldron_type is a supported legacy SQL value, represented explicitly. */
-    public record Row(String serializedBrew, Optional<String> cauldronType) {
-        public Row { Objects.requireNonNull(serializedBrew); Objects.requireNonNull(cauldronType); }
+    public record Row(String serializedBrew, Optional<String> cauldronType, Optional<UUID> birthUuid) {
+        /** Older providers may omit birth evidence; that is unknown identity, never absence. */
+        public Row(String serializedBrew, Optional<String> cauldronType) {
+            this(serializedBrew, cauldronType, Optional.empty());
+        }
+        public Row {
+            Objects.requireNonNull(serializedBrew); Objects.requireNonNull(cauldronType); Objects.requireNonNull(birthUuid);
+        }
     }
 }

@@ -72,6 +72,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Random;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
@@ -101,6 +102,8 @@ public class BukkitCauldron implements Cauldron {
     }
 
     public boolean persistenceAvailable() { return persistenceOwner.writable(); }
+
+    @Override public Optional<UUID> birthUuid() { return Optional.of(persistenceOwner.birthUuid()); }
 
     private boolean sourceAccessible() {
         return persistenceAvailable() && TheBrewingProject.getInstance().getBreweryRegistry()
@@ -144,11 +147,22 @@ public class BukkitCauldron implements Cauldron {
 
     public BukkitCauldron(Brew brew, BreweryLocation location, CauldronType cauldronType,
                           CauldronPersistenceOrder persistenceOrder) {
+        this(brew, location, cauldronType, persistenceOrder, persistenceOrder.newOwner(location));
+    }
+
+    public static BukkitCauldron hydrate(Brew brew, BreweryLocation location, CauldronType type,
+                                         CauldronPersistenceOrder.Hydration hydration,
+                                         UUID birthUuid) {
+        return new BukkitCauldron(brew, location, type, hydration.order(), hydration.restoreOwner(location, birthUuid));
+    }
+
+    private BukkitCauldron(Brew brew, BreweryLocation location, CauldronType cauldronType,
+                           CauldronPersistenceOrder persistenceOrder, CauldronPersistenceOrder.Owner owner) {
         this.location = location;
         this.brew = brew;
         this.cauldronType = cauldronType;
         this.persistenceOrder = Objects.requireNonNull(persistenceOrder);
-        this.persistenceOwner = persistenceOrder.newOwner(location);
+        this.persistenceOwner = Objects.requireNonNull(owner);
     }
 
     public static Optional<CauldronType> findCauldronType(Block block) {
