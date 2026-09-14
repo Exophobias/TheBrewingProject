@@ -17,6 +17,30 @@ import java.util.concurrent.CompletableFuture;
 public interface TheBrewingProjectApi {
 
     /**
+     * Reserve 1..20 empty coordinates and preissue durable births before native input is possible.
+     * This increment quarantines ALL input at those keys; no fixture creation is authorized.
+     * Persist the exact request/capability before calling. Unknown completion retains ownership.
+     */
+    default dev.jsinco.brewery.api.persistence.CauldronFixtureReceipt reserveCauldronFixtures(
+            dev.jsinco.brewery.api.persistence.CauldronFixtureRequest request) {
+        throw new UnsupportedOperationException("Durable cauldron fixture reservations are unavailable");
+    }
+    /** Exact read-only lookup, including after restart or a lost acquire/close response. */
+    default dev.jsinco.brewery.api.persistence.CauldronFixtureReceipt inspectCauldronFixtures(
+            dev.jsinco.brewery.api.persistence.CauldronFixtureRequest request) {
+        throw new UnsupportedOperationException("Durable cauldron fixture reservations are unavailable");
+    }
+    /**
+     * Cleanup-only retirement of the exact empty reservation. Deletes no cauldron or player value.
+     * Any live/persisted cauldron refuses; CLOSED tombstones permit exact close retries.
+     * Main-thread admission/current() and current provider identity are required by all three methods.
+     */
+    default dev.jsinco.brewery.api.persistence.CauldronFixtureReceipt closeCauldronFixtures(
+            dev.jsinco.brewery.api.persistence.CauldronFixtureRequest request) {
+        throw new UnsupportedOperationException("Durable cauldron fixture reservations are unavailable");
+    }
+
+    /**
      * Inspect 1..32 distinct cauldron keys in one world after their already accepted writes.
      * Runs SELECT only, with bounded row/text and concurrent-read budgets. Admission and current()
      * require the primary server thread (Folia region ownership is not supported by this seam).

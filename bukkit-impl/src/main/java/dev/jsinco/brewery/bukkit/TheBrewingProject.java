@@ -158,6 +158,7 @@ public class TheBrewingProject extends JavaPlugin implements TheBrewingProjectAp
     private final OwnerPublicationQueue ownerPublications = new OwnerPublicationQueue();
     private final dev.jsinco.brewery.bukkit.database.cauldron.CauldronPersistenceOrder cauldronPersistenceOrder =
             new dev.jsinco.brewery.bukkit.database.cauldron.CauldronPersistenceOrder();
+    private dev.jsinco.brewery.bukkit.database.cauldron.CauldronFixtureCoordinator cauldronFixtures;
 
     public dev.jsinco.brewery.bukkit.database.cauldron.CauldronPersistenceOrder getCauldronPersistenceOrder() {
         return cauldronPersistenceOrder;
@@ -385,6 +386,16 @@ public class TheBrewingProject extends JavaPlugin implements TheBrewingProjectAp
         this.database = new SqlDatabase(DatabaseDriver.SQLITE);
         try {
             database.init(this.getDataFolder());
+            SqlDatabase fixtureDatabase = database;
+            cauldronFixtures = new dev.jsinco.brewery.bukkit.database.cauldron.CauldronFixtureCoordinator(
+                    fixtureDatabase, cauldronPersistenceOrder,
+                    () -> Bukkit.isPrimaryThread() && isEnabled() && getInstance() == this && database == fixtureDatabase
+                            && Bukkit.getServicesManager().load(TheBrewingProjectApi.class) == this,
+                    key -> Bukkit.getWorld(key.worldUuid()) != null
+                            && Bukkit.getWorld(key.worldUuid()).isChunkLoaded(key.x() >> 4, key.z() >> 4)
+                            && breweryRegistry.getActiveSinglePositionStructure(key).isEmpty(),
+                    work -> { if (Bukkit.isPrimaryThread()) work.run(); else Bukkit.getScheduler().runTask(this, work); });
+            cauldronFixtures.initialize();
             database.startSession(SessionTypes.MISC_SESSION_TYPE).getTime()
                     .thenAccept(time -> this.time = time)
                     .join();
@@ -580,6 +591,25 @@ public class TheBrewingProject extends JavaPlugin implements TheBrewingProjectAp
     @Override public dev.jsinco.brewery.api.persistence.CauldronPersistenceReceipt inspectPersistedCauldrons(
             java.util.List<dev.jsinco.brewery.api.vector.BreweryLocation> keys) {
         return dev.jsinco.brewery.bukkit.database.cauldron.CauldronPersistenceAccess.inspect(this, keys);
+    }
+
+    @Override public dev.jsinco.brewery.api.persistence.CauldronFixtureReceipt reserveCauldronFixtures(
+            dev.jsinco.brewery.api.persistence.CauldronFixtureRequest request) {
+        return fixtureOperation(request, dev.jsinco.brewery.bukkit.database.cauldron.CauldronFixtureSession.Operation.RESERVE);
+    }
+    @Override public dev.jsinco.brewery.api.persistence.CauldronFixtureReceipt inspectCauldronFixtures(
+            dev.jsinco.brewery.api.persistence.CauldronFixtureRequest request) {
+        return fixtureOperation(request, dev.jsinco.brewery.bukkit.database.cauldron.CauldronFixtureSession.Operation.INSPECT);
+    }
+    @Override public dev.jsinco.brewery.api.persistence.CauldronFixtureReceipt closeCauldronFixtures(
+            dev.jsinco.brewery.api.persistence.CauldronFixtureRequest request) {
+        return fixtureOperation(request, dev.jsinco.brewery.bukkit.database.cauldron.CauldronFixtureSession.Operation.CLOSE);
+    }
+    private dev.jsinco.brewery.api.persistence.CauldronFixtureReceipt fixtureOperation(
+            dev.jsinco.brewery.api.persistence.CauldronFixtureRequest request,
+            dev.jsinco.brewery.bukkit.database.cauldron.CauldronFixtureSession.Operation operation) {
+        if (cauldronFixtures == null) throw new IllegalStateException("Cauldron fixture owner is not initialized");
+        return cauldronFixtures.execute(request, operation);
     }
 
     @Override public dev.jsinco.brewery.api.persistence.CauldronPersistenceReceipt retireCauldron(

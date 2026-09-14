@@ -238,6 +238,11 @@ public class PlayerEventListener implements Listener {
     }
 
     private void handleCauldron(PlayerInteractEvent event, @NonNull Block block) {
+        if (TheBrewingProject.getInstance().getCauldronPersistenceOrder().fixtureBlocked(BukkitAdapter.toBreweryLocation(block))) {
+            event.setUseInteractedBlock(Event.Result.DENY);
+            event.setUseItemInHand(Event.Result.DENY);
+            return;
+        }
         Optional<BukkitCauldron> cauldronOptional = breweryRegistry.getActiveSinglePositionStructure(BukkitAdapter.toBreweryLocation(block))
                 .filter(BukkitCauldron.class::isInstance)
                 .map(BukkitCauldron.class::cast);

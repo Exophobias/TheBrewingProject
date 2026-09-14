@@ -30,7 +30,7 @@ import java.util.concurrent.ScheduledExecutorService;
 
 public class SqlDatabase implements PersistenceHandler {
 
-    private static final int BREWERY_DATABASE_VERSION = 4;
+    private static final int BREWERY_DATABASE_VERSION = 5;
     private static final Set<String> TABLES = Set.of("barrels", "barrel_brews", "cauldrons", "distilleries",
             "distillery_brews", "version", "drunk_states_v2", "modifiers", "time");
     private static final Map<String, String> BIRTH_OBJECTS = Map.of(
@@ -95,10 +95,13 @@ public class SqlDatabase implements PersistenceHandler {
             if (previousVersion >= 3) validateTables(connection);
             if (previousVersion == BREWERY_DATABASE_VERSION) {
                 validateBirths(connection);
+                CauldronFixtureSchema.validate(connection);
                 return;
             }
         }
-        rejectBirthObjects(connection);
+        if (previousVersion != null && previousVersion == 4) validateBirths(connection);
+        else rejectBirthObjects(connection);
+        CauldronFixtureSchema.rejectPartial(connection);
         if (previousVersion != null && previousVersion < 3) {
             // These published migrations change PRAGMA foreign_keys, which is a no-op in a transaction.
             createLegacyTables(connection);
@@ -110,14 +113,18 @@ public class SqlDatabase implements PersistenceHandler {
         connection.setAutoCommit(false);
         boolean transactionResolved = false;
         try {
-            Integer expectedVersion = previousVersion == null ? null : Integer.valueOf(3);
+            Integer expectedVersion = previousVersion == null ? null : Integer.valueOf(Math.max(3, previousVersion));
             if (!Objects.equals(expectedVersion, readVersion(connection))) {
                 throw new SQLException("Database version changed during initialization");
             }
             if (previousVersion == null) createLegacyTables(connection);
-            validateCauldrons(connection, 3);
-            migrateBirths(connection);
+            if (previousVersion == null || previousVersion < 4) {
+                validateCauldrons(connection, 3);
+                migrateBirths(connection);
+            }
             validateBirths(connection);
+            CauldronFixtureSchema.create(connection);
+            CauldronFixtureSchema.validate(connection);
             setVersion(connection, BREWERY_DATABASE_VERSION);
             if (!Integer.valueOf(BREWERY_DATABASE_VERSION).equals(readVersion(connection))) {
                 throw new SQLException("Database version publication failed");
@@ -213,7 +220,7 @@ public class SqlDatabase implements PersistenceHandler {
         requireColumn(columns, "brew", "JSON", 0);
         if (version >= 3) requireColumn(columns, "cauldron_type", "TEXT", 0);
         else if (columns.containsKey("cauldron_type")) throw new SQLException("Partial cauldron type migration");
-        if (version == BREWERY_DATABASE_VERSION) {
+        if (version >= 4) {
             requireColumn(columns, "birth_uuid", "BLOB", 0);
             Column birth = columns.get("birth_uuid");
             if (birth.notNull() != 1 || !"X''".equalsIgnoreCase(birth.defaultValue())) {
@@ -273,7 +280,7 @@ public class SqlDatabase implements PersistenceHandler {
     }
 
     private static void validateBirths(Connection connection) throws SQLException {
-        validateCauldrons(connection, BREWERY_DATABASE_VERSION);
+        validateCauldrons(connection, 4);
         for (Map.Entry<String, String> object : BIRTH_OBJECTS.entrySet()) {
             try (PreparedStatement statement = connection.prepareStatement("SELECT sql FROM sqlite_schema WHERE name = ?")) {
                 statement.setString(1, object.getKey());

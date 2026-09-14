@@ -20,6 +20,10 @@ import java.util.concurrent.Executor;
 
 public final class SessionTypes {
 
+    public static final SessionType<dev.jsinco.brewery.bukkit.database.cauldron.CauldronFixtureSession>
+            CAULDRON_FIXTURE_SESSION_TYPE = (executor, handler) ->
+            new dev.jsinco.brewery.bukkit.database.cauldron.SqLiteCauldronFixtureSession(executor, ((SqlDatabase) handler)::getConnection);
+
     public static final SessionType<dev.jsinco.brewery.bukkit.database.cauldron.CauldronInspectionSession>
             CAULDRON_INSPECTION_SESSION_TYPE = (executor, handler) ->
             new dev.jsinco.brewery.bukkit.database.cauldron.SqLiteCauldronInspectionSession(

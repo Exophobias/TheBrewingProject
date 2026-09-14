@@ -32,7 +32,7 @@ class SqlDatabaseBirthMigrationTest {
         try {
             database.init(directory.toFile());
             try (Connection connection = database.getConnection()) {
-                assertEquals("4", scalar(connection, "SELECT version FROM version"));
+                assertEquals("5", scalar(connection, "SELECT version FROM version"));
                 assertEquals("1", scalar(connection, "PRAGMA foreign_keys"));
                 assertEquals("1", scalar(connection, "SELECT \"notnull\" FROM pragma_table_xinfo('cauldrons') WHERE name='birth_uuid'"));
                 execute(connection, "INSERT INTO cauldrons(cauldron_x, birth_uuid) VALUES (1, X'000102030405060708090A0B0C0D0E0F')");
@@ -77,7 +77,7 @@ class SqlDatabaseBirthMigrationTest {
             assertEquals(index, scalar(connection, "SELECT sql FROM sqlite_schema WHERE name='extension_cauldron_index'"));
             assertEquals(view, scalar(connection, "SELECT sql FROM sqlite_schema WHERE name='extension_cauldron_view'"));
             assertEquals("2", scalar(connection, "SELECT count(DISTINCT birth_uuid) FROM cauldrons WHERE typeof(birth_uuid)='blob' AND length(birth_uuid)=16"));
-            assertEquals("4", scalar(connection, "SELECT version FROM version"));
+            assertEquals("5", scalar(connection, "SELECT version FROM version"));
             List<String> current = snapshot(connection);
             initialize(connection);
             assertEquals(current, snapshot(connection));
@@ -88,7 +88,7 @@ class SqlDatabaseBirthMigrationTest {
 
     @ParameterizedTest
     @ValueSource(ints = {0, 1, 2})
-    void supportedOldEdgesKeepForeignKeyCleanupAndReachFour(int version) throws Exception {
+    void supportedOldEdgesKeepForeignKeyCleanupAndReachCurrent(int version) throws Exception {
         try (Connection connection = open()) {
             legacy(connection, version);
             execute(connection, "PRAGMA foreign_keys=OFF");
@@ -102,7 +102,7 @@ class SqlDatabaseBirthMigrationTest {
             }
             execute(connection, "PRAGMA foreign_keys=ON");
             initialize(connection);
-            assertEquals("4", scalar(connection, "SELECT version FROM version"));
+            assertEquals("5", scalar(connection, "SELECT version FROM version"));
             assertEquals("1", scalar(connection, "PRAGMA foreign_keys"));
             assertEquals("retained", scalar(connection, "SELECT brew FROM barrel_brews"));
             assertEquals("retained", scalar(connection, "SELECT brew FROM distillery_brews"));
@@ -128,7 +128,7 @@ class SqlDatabaseBirthMigrationTest {
         try (Connection connection = open()) {
             assertEquals(before, snapshot(connection));
             initialize(connection);
-            assertEquals("4", scalar(connection, "SELECT version FROM version"));
+            assertEquals("5", scalar(connection, "SELECT version FROM version"));
             assertEquals("untouched", scalar(connection, "SELECT value FROM extension_control"));
         }
     }
@@ -164,7 +164,7 @@ class SqlDatabaseBirthMigrationTest {
         try (Connection connection = open()) {
             assertEquals(before, snapshot(connection));
             initialize(connection);
-            assertEquals("4", scalar(connection, "SELECT version FROM version"));
+            assertEquals("5", scalar(connection, "SELECT version FROM version"));
         }
     }
 
@@ -173,7 +173,7 @@ class SqlDatabaseBirthMigrationTest {
         try (Connection connection = open()) {
             legacy(connection, 3);
             extensions(connection);
-            execute(connection, "UPDATE version SET version=5");
+            execute(connection, "UPDATE version SET version=6");
             List<String> changedDatabase = snapshot(connection);
             execute(connection, "UPDATE version SET version=3");
             AtomicBoolean injected = new AtomicBoolean();
@@ -183,7 +183,7 @@ class SqlDatabaseBirthMigrationTest {
                             Object result = method.invoke(connection, arguments);
                             if (method.getName().equals("setAutoCommit") && Boolean.FALSE.equals(arguments[0])) {
                                 try (Connection other = open()) {
-                                    execute(other, "UPDATE version SET version=5");
+                                    execute(other, "UPDATE version SET version=6");
                                 }
                                 injected.set(true);
                             }
@@ -195,7 +195,7 @@ class SqlDatabaseBirthMigrationTest {
             assertThrows(SQLException.class, () -> initialize(raced));
             assertTrue(injected.get());
             assertEquals(changedDatabase, snapshot(connection));
-            assertEquals("5", scalar(connection, "SELECT version FROM version"));
+            assertEquals("6", scalar(connection, "SELECT version FROM version"));
             assertEquals("0", scalar(connection, "SELECT count(*) FROM pragma_table_xinfo('cauldrons') WHERE name='birth_uuid'"));
         }
     }
@@ -231,7 +231,7 @@ class SqlDatabaseBirthMigrationTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"NULL", "'unknown'", "-1", "3.5", "5", "4294967299"})
+    @ValueSource(strings = {"NULL", "'unknown'", "-1", "3.5", "6", "4294967299"})
     void malformedOrFutureVersionIsRejectedWithoutWrites(String value) throws Exception {
         try (Connection connection = open()) {
             legacy(connection, 3);
@@ -302,7 +302,7 @@ class SqlDatabaseBirthMigrationTest {
             assertThrows(SQLException.class, () -> initialize(failAfter(connection, "INSERT INTO version")));
             assertEquals(List.of(), snapshot(connection));
             initialize(connection);
-            assertEquals("4", scalar(connection, "SELECT version FROM version"));
+            assertEquals("5", scalar(connection, "SELECT version FROM version"));
         }
     }
 
@@ -310,7 +310,7 @@ class SqlDatabaseBirthMigrationTest {
     void failedRealPoolInitializationClosesConnectionsAndSessionAdmission() throws Exception {
         try (Connection connection = open()) {
             legacy(connection, 3);
-            execute(connection, "UPDATE version SET version=5");
+            execute(connection, "UPDATE version SET version=6");
         }
         SqlDatabase database = new SqlDatabase(DatabaseDriver.SQLITE);
         assertThrows(SQLException.class, () -> database.init(directory.toFile()));

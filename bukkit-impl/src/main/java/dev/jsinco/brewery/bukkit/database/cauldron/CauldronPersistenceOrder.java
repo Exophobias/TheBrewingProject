@@ -17,9 +17,40 @@ public final class CauldronPersistenceOrder {
     private final Map<BreweryLocation, Lane> lanes = new HashMap<>();
     private final Map<UUID, Long> epochs = new HashMap<>();
     private final Set<UUID> paused = new HashSet<>();
+    private final Map<BreweryLocation, UUID> fixtureKeys = new HashMap<>();
+    private final Map<UUID, List<BreweryLocation>> fixtureRuns = new HashMap<>();
     private boolean stopped;
     private long revision;
     private int inspections;
+
+    /** Fence empty keys before reservation SQL is queued. Previously constructed owners are fenced too. */
+    public synchronized boolean reserveFixtures(UUID run, List<BreweryLocation> requested) {
+        var keys = dev.jsinco.brewery.api.persistence.CauldronPersistenceSnapshot.validateKeys(requested);
+        if (stopped || paused.contains(keys.getFirst().worldUuid())) throw new IllegalStateException("Fixture world is not available");
+        List<BreweryLocation> previous = fixtureRuns.get(run);
+        if (previous != null) {
+            if (!previous.equals(keys)) throw new IllegalStateException("Fixture run keys changed");
+            revision = Math.incrementExact(revision);
+            return false;
+        }
+        if (fixtureRuns.size() >= 128) throw new IllegalStateException("Runtime fixture capacity reached");
+        for (var key : keys) if (fixtureKeys.containsKey(key) || lanes.containsKey(key))
+            throw new IllegalStateException("Fixture coordinate has an owner or admitted work");
+        fixtureRuns.put(run, keys); keys.forEach(key -> fixtureKeys.put(key, run));
+        revision = Math.incrementExact(revision); return true;
+    }
+    /** Startup runs before hydration; no live owner may be adopted from a retained fixture key. */
+    public synchronized void restoreFixtures(UUID run, List<BreweryLocation> keys) { reserveFixtures(run, keys); }
+    public synchronized boolean fixtureBlocked(BreweryLocation key) { return fixtureKeys.containsKey(key); }
+    public synchronized boolean fixtureOwned(UUID run, List<BreweryLocation> keys) { return keys.equals(fixtureRuns.get(run)); }
+    public synchronized long revision() { return revision; }
+    /** Caller must have exact CLOSED SQL evidence, or a confirmed precommit reservation refusal. */
+    public synchronized void releaseFixtures(UUID run, List<BreweryLocation> keys) {
+        if (stopped || !keys.equals(fixtureRuns.get(run))) throw new IllegalStateException("Fixture runtime ownership changed");
+        for (var key : keys) if (!run.equals(fixtureKeys.get(key)) || lanes.containsKey(key))
+            throw new IllegalStateException("Fixture key ownership changed");
+        fixtureRuns.remove(run); keys.forEach(fixtureKeys::remove); revision = Math.incrementExact(revision);
+    }
 
     /** Captures original admitted tails; cancellation of a consumer future never drains them. */
     public synchronized Observation observe(List<BreweryLocation> requested) {
@@ -91,14 +122,14 @@ public final class CauldronPersistenceOrder {
 
     public synchronized Owner newOwner(BreweryLocation position) {
         Objects.requireNonNull(position);
-        if (stopped) throw new IllegalStateException("Cauldron persistence is stopping");
+        if (stopped || fixtureBlocked(position)) throw new IllegalStateException("Cauldron persistence is stopping or quarantined");
         epochs.putIfAbsent(position.worldUuid(), 0L);
         return new Owner(position, epoch(position.worldUuid()), UUID.randomUUID(), null);
     }
 
     private long epoch(UUID world) { return epochs.getOrDefault(world, 0L); }
     private boolean available(Owner owner) {
-        if (owner.order() != this || stopped || owner.revoked || owner.terminal || owner.failure != null
+        if (owner.order() != this || stopped || owner.revoked || owner.terminal || owner.failure != null || fixtureBlocked(owner.position)
                 || paused.contains(owner.position.worldUuid()) || owner.epoch != epoch(owner.position.worldUuid())) return false;
         Lane lane = lanes.get(owner.position);
         if (owner.hydration != null && (lane == null || lane.owner != owner)) return false;
@@ -207,7 +238,7 @@ public final class CauldronPersistenceOrder {
         public Owner restoreOwner(BreweryLocation position, UUID birthUuid) {
             synchronized (CauldronPersistenceOrder.this) {
                 requireCurrent();
-                if (adopted || !world.equals(Objects.requireNonNull(position).worldUuid()))
+                if (adopted || !world.equals(Objects.requireNonNull(position).worldUuid()) || fixtureBlocked(position))
                     throw new IllegalStateException("Cauldron birth is outside its unpublished hydration");
                 return new Owner(position, epoch, birthUuid, this);
             }
@@ -249,7 +280,8 @@ public final class CauldronPersistenceOrder {
     }
 
     public synchronized boolean unresolved(UUID world) {
-        return lanes.entrySet().stream().anyMatch(entry -> (world == null || entry.getKey().worldUuid().equals(world))
+        return fixtureKeys.keySet().stream().anyMatch(key -> world == null || key.worldUuid().equals(world))
+                || lanes.entrySet().stream().anyMatch(entry -> (world == null || entry.getKey().worldUuid().equals(world))
                 && (entry.getValue().pending != 0 || !entry.getValue().tail.isDone() || entry.getValue().failure != null));
     }
     public synchronized Status status() {
