@@ -43,9 +43,10 @@ and [Modrinth](https://modrinth.com/plugin/thebrewingproject).
 
 ### Developers
 
-The Patriam `3.3.2-patriam.5` build adds persisted cauldron birth identities and database
-schema4. See [the migration and ownership contract](PATRIAM-CAULDRON-PERSISTENCE.md) before
-deploying or attempting a downgrade. This groundwork does not enable a fixture workload.
+The Patriam `3.3.2-patriam.6` build adds durable empty cauldron reservations, quarantine and
+exact cleanup in database schema5, retaining the birth identities introduced by `.5` in schema4.
+See [the migration and ownership contract](PATRIAM-CAULDRON-PERSISTENCE.md) before deploying
+or attempting a downgrade. Native cooking remains unavailable for reserved fixture lanes.
 
 **API**
 > [!IMPORTANT]

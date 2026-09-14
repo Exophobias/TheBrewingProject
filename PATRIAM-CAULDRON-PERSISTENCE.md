@@ -25,7 +25,7 @@ native fixture creation and consumer recovery remain separate prerequisites.
 
 ## Empty fixture reservations
 
-The next owner increment adds database schema **5**, migrating schema4 atomically without
+`3.3.2-patriam.6` adds database schema **5**, migrating schema4 atomically without
 rewriting ordinary cauldron births, brew values or extension columns. It introduces bounded
 reservation history and SQL guards; operator configuration is unchanged. Older binaries reject
 schema5. Do not remove its owner tables or lower the version to force a downgrade.
