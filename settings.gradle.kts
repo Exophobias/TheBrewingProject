@@ -12,6 +12,11 @@ plugins {
     id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
 }
 
+require(!(providers.gradleProperty("paper26.2").isPresent && providers.gradleProperty("paper26.3").isPresent)) {
+    "Select only one Paper shipping target: -Ppaper26.2 or -Ppaper26.3"
+}
+
+// -Ppaper26.3 selects the pinned Java 25 alpha API independently of the default test gate.
 // Compile target. The default is upstream's Paper version so that `./gradlew test` keeps running the
 // MockBukkit suite against the API it was written for. `-Ppaper26.2` retargets the compile classpath
 // at the Paper 26.2 API, which is what the server actually runs, and builds the jar that ships.
@@ -23,7 +28,9 @@ plugins {
 dependencyResolutionManagement {
     versionCatalogs {
         create("libs") {
-            if (providers.gradleProperty("paper26.2").isPresent) {
+            if (providers.gradleProperty("paper26.3").isPresent) {
+                version("paper", "26.3.build.26-alpha")
+            } else if (providers.gradleProperty("paper26.2").isPresent) {
                 version("paper", "26.2.build.92-stable")
             }
         }

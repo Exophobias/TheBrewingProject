@@ -546,3 +546,16 @@ class DiscordWebhook(
         }
     }
 }
+// Verify the exact resolved shipping API while preserving the default MockBukkit gate.
+tasks.register("verifyPaperApi") {
+    doLast {
+        val expected = libs.paper.api.get().versionConstraint.requiredVersion
+        val api = configurations.compileClasspath.get().resolvedConfiguration.resolvedArtifacts.single {
+            it.moduleVersion.id.group == "io.papermc.paper" && it.name == "paper-api"
+        }
+        check(api.moduleVersion.id.version == expected) {
+            "Expected paper-api:$expected, resolved ${api.moduleVersion.id}"
+        }
+        logger.lifecycle("paper-api:jar:${api.moduleVersion.id.version}")
+    }
+}
