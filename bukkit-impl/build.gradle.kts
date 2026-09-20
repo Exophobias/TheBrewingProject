@@ -25,7 +25,10 @@ repositories {
     maven("https://jitpack.io")
     maven("https://repo.papermc.io/repository/maven-public/")
     maven("https://repo.oraxen.com/releases")
-    maven("https://maven.devs.beer/")
+    maven("https://maven.devs.beer/") {
+        // An ItemsAdder repository outage must not block unrelated integration dependencies.
+        content { includeGroup("dev.lone") }
+    }
     maven("https://repo.nexomc.com/releases")
     maven("https://maven.enginehub.org/repo/")
     maven("https://repo.codemc.org/repository/maven-public/")
