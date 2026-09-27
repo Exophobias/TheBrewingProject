@@ -2,13 +2,16 @@ package dev.jsinco.brewery.bukkit.testutil;
 
 import io.papermc.paper.datacomponent.DataComponentBuilder;
 import io.papermc.paper.datacomponent.DataComponentType;
+import io.papermc.paper.datacomponent.DataComponentTypes;
 import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
 import org.bukkit.inventory.ItemType;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Supplier;
@@ -20,6 +23,7 @@ import java.util.function.Supplier;
  */
 public final class ComponentItemStackMock extends ItemStackMockPDC {
     private final Map<DataComponentType, Object> components = new HashMap<>();
+    private final Set<DataComponentType> removedComponents = new HashSet<>();
 
     public ComponentItemStackMock(Material material) {
         super(material);
@@ -27,11 +31,13 @@ public final class ComponentItemStackMock extends ItemStackMockPDC {
 
     @Override @SuppressWarnings("unchecked")
     public <T> T getData(DataComponentType.Valued<T> type) {
-        return (T) components.get(type);
+        return removedComponents.contains(type) ? null
+                : (T) components.getOrDefault(type, prototype(type));
     }
 
     @Override public <T> void setData(DataComponentType.Valued<T> type, T value) {
         components.put(type, value);
+        removedComponents.remove(type);
     }
 
     @Override public <T> void setData(DataComponentType.Valued<T> type, DataComponentBuilder<T> value) {
@@ -40,18 +46,35 @@ public final class ComponentItemStackMock extends ItemStackMockPDC {
 
     @Override public void setData(DataComponentType.NonValued type) {
         components.put(type, Boolean.TRUE);
+        removedComponents.remove(type);
     }
 
     @Override public void unsetData(DataComponentType type) {
         components.remove(type);
+        removedComponents.add(type);
+    }
+
+    @Override public void resetData(DataComponentType type) {
+        components.remove(type);
+        removedComponents.remove(type);
     }
 
     @Override public boolean hasData(DataComponentType type) {
-        return components.containsKey(type);
+        return !removedComponents.contains(type)
+                && (components.containsKey(type) || prototype(type) != null);
     }
 
     @Override public Set<DataComponentType> getDataTypes() {
-        return Set.copyOf(components.keySet());
+        Set<DataComponentType> types = new HashSet<>(components.keySet());
+        if (getType() == Material.POTION && !removedComponents.contains(DataComponentTypes.ITEM_MODEL)) {
+            types.add(DataComponentTypes.ITEM_MODEL);
+        }
+        return Set.copyOf(types);
+    }
+
+    private Object prototype(DataComponentType type) {
+        return getType() == Material.POTION && type == DataComponentTypes.ITEM_MODEL
+                ? NamespacedKey.minecraft("potion") : null;
     }
 
     @Override public ComponentItemStackMock clone() {
@@ -59,6 +82,7 @@ public final class ComponentItemStackMock extends ItemStackMockPDC {
         copy.setAmount(getAmount());
         copy.setItemMeta(getItemMeta());
         copy.components.putAll(components);
+        copy.removedComponents.addAll(removedComponents);
         return copy;
     }
 

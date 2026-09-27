@@ -27,12 +27,13 @@ public class BrewMigrationListener implements Listener {
      * Migrates an ItemStack from whatever encryption method/key
      * was used to 256 bit AES-GCM using the newest secret key.
      */
-    private static Optional<ItemStack> migrateItemStack(@Nullable ItemStack item) {
+    static Optional<ItemStack> migrateItemStack(@Nullable ItemStack item) {
         if (item == null || item.isEmpty()) return Optional.empty();
         Optional<Brew> brewOptional = BrewAdapterAccess.fromItem(item);
         return brewOptional.map(brew -> BrewAdapterAccess.toItem(brew, new Brew.State.Other()))
                 .or(() -> dev.jsinco.brewery.bukkit.recipe.BrewRecognition.refreshLegacySealed(item,
-                        dev.jsinco.brewery.bukkit.TheBrewingProject.getInstance().getRecipeRegistry()));
+                        dev.jsinco.brewery.bukkit.TheBrewingProject.getInstance().getRecipeRegistry()))
+                .or(() -> dev.jsinco.brewery.bukkit.recipe.BrewRecognition.restoreMissingPotionModel(item));
     }
 
     @EventHandler(ignoreCancelled = true)

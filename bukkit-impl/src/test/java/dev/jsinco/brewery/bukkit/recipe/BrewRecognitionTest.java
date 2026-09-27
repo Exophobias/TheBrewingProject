@@ -74,6 +74,9 @@ class BrewRecognitionTest {
             assertTrue(result.recipeResult().isEmpty());
             ItemStack item = result.toItem(new Brew.State.Seal("one bottle"), BrewQuality.EXCELLENT);
             assertEquals(BrewRecognition.anonymousName(score), plain(item.getData(DataComponentTypes.CUSTOM_NAME)));
+            assertEquals(NamespacedKey.minecraft("potion"), item.getData(DataComponentTypes.ITEM_MODEL));
+            assertEquals(NamespacedKey.minecraft("potion"),
+                    result.toItem(new Brew.State.Other()).getData(DataComponentTypes.ITEM_MODEL));
             assertTrue(item.getData(DataComponentTypes.LORE).lines().isEmpty());
             RecipeEffectsImpl.fromItem(item).ifPresent(effects -> assertNull(effects.getMessage()));
         }
@@ -83,6 +86,7 @@ class BrewRecognitionTest {
         Recipe<ItemStack> recipe = recipe();
         ItemStack poor = BrewRecognition.ingredientItem(recipe, .599);
         assertEquals("Poor Brew", plain(poor.getData(DataComponentTypes.CUSTOM_NAME)));
+        assertEquals(NamespacedKey.minecraft("potion"), poor.getData(DataComponentTypes.ITEM_MODEL));
         assertNull(RecipeEffectsImpl.fromItem(poor).orElseThrow().getMessage());
         ItemStack good = BrewRecognition.ingredientItem(recipe, .6);
         assertEquals("Public recipe name", plain(good.getData(DataComponentTypes.CUSTOM_NAME)));
@@ -95,8 +99,11 @@ class BrewRecognitionTest {
     @Test void oldPoorSealLosesRecognitionButKeepsQuantityEffectsAndMetadata() {
         Recipe<ItemStack> recipe = recipe();
         ItemStack original = oldSeal(recipe, .599);
+        original.setData(DataComponentTypes.ITEM_MODEL, new NamespacedKey("test", "old_bottle"));
         ItemStack refreshed = BrewRecognition.refreshLegacySealed(original, plugin.getRecipeRegistry()).orElseThrow();
         assertEquals("Poor Brew", plain(refreshed.getData(DataComponentTypes.CUSTOM_NAME)));
+        assertEquals(NamespacedKey.minecraft("potion"), refreshed.getData(DataComponentTypes.ITEM_MODEL));
+        assertEquals(new NamespacedKey("test", "old_bottle"), original.getData(DataComponentTypes.ITEM_MODEL));
         assertTrue(refreshed.getData(DataComponentTypes.LORE).lines().isEmpty());
         assertEquals(4, refreshed.getAmount());
         RecipeEffectsImpl effects = RecipeEffectsImpl.fromItem(refreshed).orElseThrow();
@@ -115,6 +122,26 @@ class BrewRecognitionTest {
         assertEquals(4, refreshed.getAmount());
         assertEquals(new Interval(100, 100), RecipeEffectsImpl.fromItem(refreshed).orElseThrow().getEffects().getFirst().durationRange());
         assertTrue(BrewRecognition.refreshLegacySealed(refreshed, plugin.getRecipeRegistry()).isEmpty());
+    }
+
+    @Test void alreadyIssuedBottleRecoversItsModelWithoutChangingStoredBrewData() {
+        ItemStack original = new ComponentItemStackMock(Material.POTION);
+        original.setAmount(4);
+        NamespacedKey brewerMark = new NamespacedKey("test", "brewer");
+        original.editPersistentDataContainer(pdc -> pdc.set(brewerMark, PersistentDataType.STRING, "preserved"));
+        BrewRecognition.markCurrent(original);
+        original.unsetData(DataComponentTypes.ITEM_MODEL);
+
+        ItemStack repaired = BrewRecognition.restoreMissingPotionModel(original).orElseThrow();
+        assertEquals(NamespacedKey.minecraft("potion"), repaired.getData(DataComponentTypes.ITEM_MODEL));
+        assertEquals(4, repaired.getAmount());
+        assertEquals("preserved", repaired.getPersistentDataContainer().get(brewerMark, PersistentDataType.STRING));
+        assertFalse(original.hasData(DataComponentTypes.ITEM_MODEL), "repair must return a copy");
+        assertTrue(BrewRecognition.restoreMissingPotionModel(repaired).isEmpty(), "repair is idempotent");
+
+        ItemStack unrelated = new ComponentItemStackMock(Material.POTION);
+        unrelated.unsetData(DataComponentTypes.ITEM_MODEL);
+        assertTrue(BrewRecognition.restoreMissingPotionModel(unrelated).isEmpty());
     }
 
     private Recipe<ItemStack> recipe() {

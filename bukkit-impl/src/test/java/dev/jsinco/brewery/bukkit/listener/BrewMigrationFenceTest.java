@@ -3,8 +3,11 @@ package dev.jsinco.brewery.bukkit.listener;
 import dev.jsinco.brewery.api.structure.StructureType;
 import dev.jsinco.brewery.bukkit.TheBrewingProject;
 import dev.jsinco.brewery.bukkit.breweries.distillery.BukkitDistillery;
+import dev.jsinco.brewery.bukkit.recipe.BrewRecognition;
 import dev.jsinco.brewery.bukkit.structure.PlacedBreweryStructure;
 import dev.jsinco.brewery.bukkit.testutil.CauldronOwnerServerMock;
+import dev.jsinco.brewery.bukkit.testutil.ComponentItemStackMock;
+import io.papermc.paper.datacomponent.DataComponentTypes;
 import org.bukkit.*;
 import org.bukkit.event.inventory.InventoryOpenEvent;
 import org.bukkit.inventory.ItemStack;
@@ -78,6 +81,14 @@ class BrewMigrationFenceTest {
     @Test void disabledMigrationNeitherRendersNorChangesTheNativeEvent() {
         new BrewMigrationListener(item->{throw new AssertionError("disabled render");},()->false).onPlayerOpenInventory(event);
         assertFalse(event.isCancelled());assertOriginal();
+    }
+    @Test void migrationRepairsAlreadyIssuedModelLessBottles() {
+        ItemStack original = new ComponentItemStackMock(Material.POTION);
+        BrewRecognition.markCurrent(original);
+        original.unsetData(DataComponentTypes.ITEM_MODEL);
+        ItemStack repaired = BrewMigrationListener.migrateItemStack(original).orElseThrow();
+        assertEquals(NamespacedKey.minecraft("potion"), repaired.getData(DataComponentTypes.ITEM_MODEL));
+        assertFalse(original.hasData(DataComponentTypes.ITEM_MODEL));
     }
     private void assertOriginal(){assertEquals(new ItemStack(Material.STONE,2),owner.getMixture().getInventory().getItem(0));}
 }

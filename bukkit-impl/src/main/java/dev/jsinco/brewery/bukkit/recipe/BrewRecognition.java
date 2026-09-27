@@ -46,13 +46,28 @@ public final class BrewRecognition {
         item.setData(DataComponentTypes.POTION_CONTENTS,
                 PotionContents.potionContents().customColor(Color.fromRGB(0x796B52)).build());
         item.unsetData(DataComponentTypes.CUSTOM_MODEL_DATA);
-        item.unsetData(DataComponentTypes.ITEM_MODEL);
+        // A potion has a vanilla item model in its prototype. Removing that component
+        // suppresses the model entirely, leaving anonymous brews without a texture.
+        item.resetData(DataComponentTypes.ITEM_MODEL);
         item.unsetData(DataComponentTypes.ENCHANTMENTS);
         item.unsetData(DataComponentTypes.ENCHANTMENT_GLINT_OVERRIDE);
     }
 
     public static void markCurrent(ItemStack item) {
         item.editPersistentDataContainer(pdc -> pdc.set(PRESENTATION_VERSION, PersistentDataType.INTEGER, 1));
+    }
+
+    /** Repair already-issued anonymous bottles without changing their brew data or effects. */
+    public static Optional<ItemStack> restoreMissingPotionModel(ItemStack original) {
+        Integer presentationVersion = original.getPersistentDataContainer()
+                .get(PRESENTATION_VERSION, PersistentDataType.INTEGER);
+        if (original.getType() != Material.POTION || !Integer.valueOf(1).equals(presentationVersion)
+                || original.hasData(DataComponentTypes.ITEM_MODEL)) {
+            return Optional.empty();
+        }
+        ItemStack repaired = original.clone();
+        repaired.resetData(DataComponentTypes.ITEM_MODEL);
+        return Optional.of(repaired);
     }
 
     /** A stored ingredient score must not bypass the failed-batch presentation rule. */
