@@ -238,7 +238,10 @@ public class PlayerEventListener implements Listener {
     }
 
     private void handleCauldron(PlayerInteractEvent event, @NonNull Block block) {
-        if (TheBrewingProject.getInstance().getCauldronPersistenceOrder().fixtureBlocked(BukkitAdapter.toBreweryLocation(block))) {
+        var cauldronOrder = TheBrewingProject.getInstance().getCauldronPersistenceOrder();
+        if (cauldronOrder.nativeBlocked(BukkitAdapter.toBreweryLocation(block))
+                && !cauldronOrder.fixtureBlocked(BukkitAdapter.toBreweryLocation(block))) return;
+        if (cauldronOrder.fixtureBlocked(BukkitAdapter.toBreweryLocation(block))) {
             event.setUseInteractedBlock(Event.Result.DENY);
             event.setUseItemInHand(Event.Result.DENY);
             return;

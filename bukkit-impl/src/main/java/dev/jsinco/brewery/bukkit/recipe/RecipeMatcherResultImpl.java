@@ -153,6 +153,7 @@ public class RecipeMatcherResultImpl implements RecipeMatcherResult<ItemStack> {
         if (BrewRecognition.recognized(score)) RecipeEffectsImpl.applyBrewDurationReward(itemStack, brew);
         itemStack.editPersistentDataContainer(pdc -> {
             if (state instanceof BrewImpl.State.Seal) {
+                BrewAdapterAccess.removeBrewHistory(pdc);
                 BrewAdapterAccess.applyBrewMeta(pdc, brew);
             } else {
                 BrewAdapterAccess.applyBrewData(pdc, brew);
@@ -162,6 +163,8 @@ public class RecipeMatcherResultImpl implements RecipeMatcherResult<ItemStack> {
                 .retrieve(IntegrationTypes.ITEM)
                 .forEach(integration -> integration.decorateBrewItem(itemStack, brew));
         BrewRecognition.markCurrent(itemStack);
+        var verifier = TheBrewingProject.getInstance().getVerifiedConsumableService();
+        if (verifier != null) verifier.refresh(itemStack, brew, recipe, score, state instanceof Brew.State.Seal);
     }
 
     private void applyLore(ItemStack itemStack, RecipeResult<ItemStack> recipeResult, Brew.State state) {

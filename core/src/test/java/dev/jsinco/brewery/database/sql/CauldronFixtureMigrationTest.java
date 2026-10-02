@@ -22,6 +22,10 @@ class CauldronFixtureMigrationTest {
     private String scalar(Connection c,String sql) throws SQLException { try(var s=c.createStatement();var rows=s.executeQuery(sql)) { assertTrue(rows.next()); return rows.getString(1); } }
     private void schemaFour(Connection c) throws SQLException {
         initialize(c);
+        for (var entry : new ArrayList<>(ExternalCauldronStorage.OBJECTS.entrySet()).reversed()) {
+            String kind = entry.getValue().startsWith("CREATE TABLE") ? "TABLE" : entry.getValue().startsWith("CREATE UNIQUE INDEX") ? "INDEX" : "TRIGGER";
+            execute(c, "DROP " + kind + " " + entry.getKey());
+        }
         for(var entry:new ArrayList<>(CauldronFixtureSchema.OBJECTS.entrySet()).reversed()) {
             String kind=entry.getValue().startsWith("CREATE TABLE")?"TABLE":entry.getValue().startsWith("CREATE UNIQUE INDEX")?"INDEX":"TRIGGER";
             execute(c,"DROP "+kind+" "+entry.getKey());
@@ -41,7 +45,7 @@ class CauldronFixtureMigrationTest {
         try(var c=open()) {
             schemaFour(c); var before=objects(c);
             String row=scalar(c,"SELECT brew||hex(birth_uuid)||hex(extension) FROM cauldrons");
-            initialize(c); assertEquals("5",scalar(c,"SELECT version FROM version"));
+            initialize(c); assertEquals("6",scalar(c,"SELECT version FROM version"));
             assertEquals(row,scalar(c,"SELECT brew||hex(birth_uuid)||hex(extension) FROM cauldrons"));
             assertTrue(objects(c).containsAll(before)); assertEquals("0",scalar(c,"SELECT count(*) FROM extension_log"));
             var after=objects(c); initialize(c); assertEquals(after,objects(c));
@@ -74,14 +78,14 @@ class CauldronFixtureMigrationTest {
         try(var c=open()) {
             assertEquals(before,objects(c)); assertEquals("4",scalar(c,"SELECT version FROM version"));
             assertEquals("exact ordinary contents",scalar(c,"SELECT brew FROM cauldrons"));
-            initialize(c); assertEquals("5",scalar(c,"SELECT version FROM version"));
+            initialize(c); assertEquals("6",scalar(c,"SELECT version FROM version"));
         }
     }
     @Test void partialOwnerObjectsAndFutureVersionRefuseWithoutRepair() throws Exception {
         try(var c=open()) {
             schemaFour(c); execute(c,"CREATE TABLE cauldron_fixture_runs(unrelated TEXT)"); var before=objects(c);
             assertThrows(SQLException.class,()->initialize(c)); assertEquals(before,objects(c));
-            execute(c,"DROP TABLE cauldron_fixture_runs"); execute(c,"UPDATE version SET version=6"); before=objects(c);
+            execute(c,"DROP TABLE cauldron_fixture_runs"); execute(c,"UPDATE version SET version=7"); before=objects(c);
             assertThrows(SQLException.class,()->initialize(c)); assertEquals(before,objects(c));
         }
     }

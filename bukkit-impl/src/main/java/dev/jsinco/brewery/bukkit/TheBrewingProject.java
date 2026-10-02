@@ -159,6 +159,8 @@ public class TheBrewingProject extends JavaPlugin implements TheBrewingProjectAp
     private final dev.jsinco.brewery.bukkit.database.cauldron.CauldronPersistenceOrder cauldronPersistenceOrder =
             new dev.jsinco.brewery.bukkit.database.cauldron.CauldronPersistenceOrder();
     private dev.jsinco.brewery.bukkit.database.cauldron.CauldronFixtureCoordinator cauldronFixtures;
+    private dev.jsinco.brewery.bukkit.database.cauldron.ExternalCauldronCoordinator externalCauldrons;
+    private dev.jsinco.brewery.bukkit.brew.VerifiedConsumableService verifiedConsumables;
 
     public dev.jsinco.brewery.bukkit.database.cauldron.CauldronPersistenceOrder getCauldronPersistenceOrder() {
         return cauldronPersistenceOrder;
@@ -396,6 +398,24 @@ public class TheBrewingProject extends JavaPlugin implements TheBrewingProjectAp
                             && breweryRegistry.getActiveSinglePositionStructure(key).isEmpty(),
                     work -> { if (Bukkit.isPrimaryThread()) work.run(); else Bukkit.getScheduler().runTask(this, work); });
             cauldronFixtures.initialize();
+            java.util.function.Predicate<dev.jsinco.brewery.api.vector.BreweryLocation> externalLoaded = key ->
+                    Bukkit.getWorld(key.worldUuid()) != null && Bukkit.getWorld(key.worldUuid()).isChunkLoaded(key.x() >> 4, key.z() >> 4);
+            externalCauldrons = new dev.jsinco.brewery.bukkit.database.cauldron.ExternalCauldronCoordinator(
+                    fixtureDatabase, cauldronPersistenceOrder,
+                    () -> Bukkit.isPrimaryThread() && isEnabled() && getInstance() == this && database == fixtureDatabase
+                            && Bukkit.getServicesManager().load(TheBrewingProjectApi.class) == this,
+                    key -> externalLoaded.test(key) && breweryRegistry.getActiveSinglePositionStructure(key).isEmpty(),
+                    key -> externalLoaded.test(key) && Bukkit.getWorld(key.worldUuid()).getBlockAt(key.x(), key.y(), key.z()).getType() == org.bukkit.Material.CAULDRON,
+                    key -> externalLoaded.test(key) && java.util.Set.of(org.bukkit.Material.CAULDRON, org.bukkit.Material.WATER_CAULDRON)
+                            .contains(Bukkit.getWorld(key.worldUuid()).getBlockAt(key.x(), key.y(), key.z()).getType()),
+                    externalLoaded,
+                    work -> { if (Bukkit.isPrimaryThread()) work.run(); else Bukkit.getScheduler().runTask(this, work); },
+                    event -> Bukkit.getPluginManager().callEvent(event));
+            externalCauldrons.initialize();
+            try (var connection = database.getConnection()) {
+                verifiedConsumables = new dev.jsinco.brewery.bukkit.brew.VerifiedConsumableService(
+                        dev.jsinco.brewery.database.sql.ExternalCauldronStorage.signingKey(connection));
+            }
             database.startSession(SessionTypes.MISC_SESSION_TYPE).getTime()
                     .thenAccept(time -> this.time = time)
                     .join();
@@ -416,6 +436,8 @@ public class TheBrewingProject extends JavaPlugin implements TheBrewingProjectAp
         pluginManager.registerEvents(new BlockEventListener(this.structureRegistry, placedStructureRegistry, this.database, this.breweryRegistry), this);
         pluginManager.registerEvents(new PlayerEventListener(this.placedStructureRegistry, this.breweryRegistry, this.database, this.drunksManager, this.drunkTextRegistry, recipeRegistry, drunkEventExecutor), this);
         pluginManager.registerEvents(new InventoryEventListener(breweryRegistry, database), this);
+        pluginManager.registerEvents(new dev.jsinco.brewery.bukkit.listener.ExternalCauldronListener(cauldronPersistenceOrder, externalCauldrons), this);
+        Bukkit.getWorlds().forEach(world -> externalCauldrons.reconcileLoaded(world.getUID(), Integer.MIN_VALUE, Integer.MIN_VALUE));
         this.worldEventListener = new WorldEventListener(this.database, this.placedStructureRegistry, this.breweryRegistry);
         worldEventListener.init();
         this.playerWalkListener = new PlayerWalkListener();
@@ -586,6 +608,31 @@ public class TheBrewingProject extends JavaPlugin implements TheBrewingProjectAp
 
     public SqlDatabase getDatabase() {
         return this.database;
+    }
+
+    public dev.jsinco.brewery.bukkit.brew.VerifiedConsumableService getVerifiedConsumableService() { return verifiedConsumables; }
+
+    @Override public java.util.Optional<dev.jsinco.brewery.api.brew.VerifiedBrewConsumable> inspectVerifiedConsumable(org.bukkit.inventory.ItemStack item) {
+        if (!Bukkit.isPrimaryThread() || !isEnabled() || verifiedConsumables == null) return java.util.Optional.empty();
+        return verifiedConsumables.inspect(item);
+    }
+    @Override public java.util.concurrent.CompletableFuture<dev.jsinco.brewery.api.persistence.ExternalCauldronLease> acquireExternalCauldronLease(
+            dev.jsinco.brewery.api.persistence.ExternalCauldronLeaseRequest request) {
+        if (externalCauldrons == null) return java.util.concurrent.CompletableFuture.failedFuture(new IllegalStateException("External cauldron provider is unavailable"));
+        return externalCauldrons.acquire(request);
+    }
+    @Override public java.util.concurrent.CompletableFuture<java.util.Optional<dev.jsinco.brewery.api.persistence.ExternalCauldronLease>> inspectExternalCauldronLease(
+            dev.jsinco.brewery.api.persistence.ExternalCauldronLeaseRequest request) {
+        if (externalCauldrons == null) return java.util.concurrent.CompletableFuture.failedFuture(new IllegalStateException("External cauldron provider is unavailable"));
+        return externalCauldrons.inspect(request);
+    }
+    @Override public java.util.concurrent.CompletableFuture<dev.jsinco.brewery.api.persistence.ExternalCauldronLease> releaseExternalCauldronLease(
+            dev.jsinco.brewery.api.persistence.ExternalCauldronLeaseRequest request) {
+        if (externalCauldrons == null) return java.util.concurrent.CompletableFuture.failedFuture(new IllegalStateException("External cauldron provider is unavailable"));
+        return externalCauldrons.release(request);
+    }
+    @Override public boolean isExternalCauldronLeaseCurrent(dev.jsinco.brewery.api.persistence.ExternalCauldronLease lease) {
+        return externalCauldrons != null && externalCauldrons.isCurrent(lease);
     }
 
     @Override public dev.jsinco.brewery.api.persistence.CauldronPersistenceReceipt inspectPersistedCauldrons(

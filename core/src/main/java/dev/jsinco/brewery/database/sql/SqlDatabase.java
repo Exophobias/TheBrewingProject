@@ -30,7 +30,7 @@ import java.util.concurrent.ScheduledExecutorService;
 
 public class SqlDatabase implements PersistenceHandler {
 
-    private static final int BREWERY_DATABASE_VERSION = 5;
+    private static final int BREWERY_DATABASE_VERSION = 6;
     private static final Set<String> TABLES = Set.of("barrels", "barrel_brews", "cauldrons", "distilleries",
             "distillery_brews", "version", "drunk_states_v2", "modifiers", "time");
     private static final Map<String, String> BIRTH_OBJECTS = Map.of(
@@ -96,12 +96,15 @@ public class SqlDatabase implements PersistenceHandler {
             if (previousVersion == BREWERY_DATABASE_VERSION) {
                 validateBirths(connection);
                 CauldronFixtureSchema.validate(connection);
+                ExternalCauldronStorage.validate(connection);
                 return;
             }
         }
-        if (previousVersion != null && previousVersion == 4) validateBirths(connection);
+        if (previousVersion != null && previousVersion >= 4) validateBirths(connection);
         else rejectBirthObjects(connection);
-        CauldronFixtureSchema.rejectPartial(connection);
+        if (previousVersion != null && previousVersion >= 5) CauldronFixtureSchema.validate(connection);
+        else CauldronFixtureSchema.rejectPartial(connection);
+        ExternalCauldronStorage.rejectPartial(connection);
         if (previousVersion != null && previousVersion < 3) {
             // These published migrations change PRAGMA foreign_keys, which is a no-op in a transaction.
             createLegacyTables(connection);
@@ -123,8 +126,10 @@ public class SqlDatabase implements PersistenceHandler {
                 migrateBirths(connection);
             }
             validateBirths(connection);
-            CauldronFixtureSchema.create(connection);
+            if (previousVersion == null || previousVersion < 5) CauldronFixtureSchema.create(connection);
             CauldronFixtureSchema.validate(connection);
+            ExternalCauldronStorage.create(connection);
+            ExternalCauldronStorage.validate(connection);
             setVersion(connection, BREWERY_DATABASE_VERSION);
             if (!Integer.valueOf(BREWERY_DATABASE_VERSION).equals(readVersion(connection))) {
                 throw new SQLException("Database version publication failed");

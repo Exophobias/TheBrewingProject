@@ -76,6 +76,11 @@ public class BrewAdapterAccess {
         pdc.set(BREWERY_META, MetaDataPdcType.INSTANCE, brew.meta());
     }
 
+    /** Sealing must not retain recipe-output history from a copied item template. */
+    public static void removeBrewHistory(PersistentDataContainer pdc) {
+        pdc.remove(BREWERY_DATA_VERSION); pdc.remove(BREWERY_CIPHERED); pdc.remove(BREWING_STEPS);
+    }
+
     public static Optional<Brew> fromItem(ItemStack itemStack) {
         PersistentDataContainerView data = itemStack.getPersistentDataContainer();
         Integer dataVersion = data.get(BREWERY_DATA_VERSION, PersistentDataType.INTEGER);

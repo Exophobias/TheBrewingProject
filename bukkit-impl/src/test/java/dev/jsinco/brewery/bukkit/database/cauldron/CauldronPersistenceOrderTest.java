@@ -15,6 +15,30 @@ class CauldronPersistenceOrderTest {
         return order.admit(owner, CauldronPersistenceOrder.Write.INSERT, previous -> previous);
     }
 
+    @Test void productionLeaseFencesDetachedOwnersFixturesAndHydrationAndPausesAcrossWorldUnload() {
+        var detached = order.newOwner(key(1));
+        var request = new dev.jsinco.brewery.api.persistence.ExternalCauldronLeaseRequest(UUID.randomUUID(), "patriamforging", key(1));
+        assertTrue(order.reserveExternal(request)); assertFalse(order.reserveExternal(request));
+        assertTrue(order.nativeBlocked(key(1))); assertFalse(detached.writable());
+        assertThrows(IllegalStateException.class, () -> order.newOwner(key(1)));
+        assertThrows(IllegalStateException.class, () -> insert(detached));
+        assertThrows(IllegalStateException.class, () -> order.reserveFixtures(UUID.randomUUID(), List.of(key(1))));
+        assertTrue(order.externalAvailable(request)); assertFalse(order.unresolved(world), "durable production stock does not veto lawful unload");
+        var hydration = order.beginHydration(world, () -> true); assertFalse(order.externalAvailable(request));
+        assertThrows(IllegalStateException.class, () -> hydration.restoreOwner(key(1), UUID.randomUUID()));
+        hydration.adopt(List.of()); hydration.published(); assertTrue(order.externalAvailable(request));
+        order.releaseExternal(request); assertFalse(order.nativeBlocked(key(1))); assertFalse(detached.writable());
+    }
+
+    @Test void admittedPendingOrFailedNativeWorkCannotBecomeAnExternalLease() {
+        var owner = order.newOwner(key(1)); var dependency = new CompletableFuture<Void>();
+        order.admit(owner, CauldronPersistenceOrder.Write.INSERT, previous -> dependency);
+        var request = new dev.jsinco.brewery.api.persistence.ExternalCauldronLeaseRequest(UUID.randomUUID(), "patriamforging", key(1));
+        assertThrows(IllegalStateException.class, () -> order.reserveExternal(request));
+        dependency.completeExceptionally(new IllegalStateException("native write outcome is unresolved"));
+        assertThrows(IllegalStateException.class, () -> order.reserveExternal(request));
+    }
+
     @Test void replacementNeedsTerminalAdmissionAndOldCapabilityNeverReacquiresAnEmptyLane() {
         var a = order.newOwner(key(1)); var b = order.newOwner(key(1));
         insert(a).join();

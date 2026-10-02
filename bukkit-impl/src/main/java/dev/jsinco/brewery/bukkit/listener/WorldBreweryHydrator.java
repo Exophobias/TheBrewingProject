@@ -71,6 +71,8 @@ final class WorldBreweryHydrator {
             // Retained reservations are cleanup-only, including unexpected rows. Preserve SQL and
             // quarantine their keys while allowing unrelated ordinary cauldrons to hydrate.
             if (cauldronHydration != null && cauldronHydration.order().fixtureBlocked(row.location())) continue;
+            if (cauldronHydration != null && cauldronHydration.order().nativeBlocked(row.location()))
+                throw new IllegalStateException("Native cauldron overlaps a production external lease");
             if (registry.getActiveSinglePositionStructure(row.location()).isPresent()) {
                 throw new IllegalStateException("Hydration would replace a live cauldron at " + row.location());
             }

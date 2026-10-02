@@ -19,6 +19,8 @@ public final class CauldronPersistenceOrder {
     private final Set<UUID> paused = new HashSet<>();
     private final Map<BreweryLocation, UUID> fixtureKeys = new HashMap<>();
     private final Map<UUID, List<BreweryLocation>> fixtureRuns = new HashMap<>();
+    private final Map<BreweryLocation, dev.jsinco.brewery.api.persistence.ExternalCauldronLeaseRequest> externalKeys = new HashMap<>();
+    private final Map<BreweryLocation, Long> coordinateRevisions = new HashMap<>();
     private boolean stopped;
     private long revision;
     private int inspections;
@@ -34,7 +36,7 @@ public final class CauldronPersistenceOrder {
             return false;
         }
         if (fixtureRuns.size() >= 128) throw new IllegalStateException("Runtime fixture capacity reached");
-        for (var key : keys) if (fixtureKeys.containsKey(key) || lanes.containsKey(key))
+        for (var key : keys) if (nativeBlocked(key) || lanes.containsKey(key))
             throw new IllegalStateException("Fixture coordinate has an owner or admitted work");
         fixtureRuns.put(run, keys); keys.forEach(key -> fixtureKeys.put(key, run));
         revision = Math.incrementExact(revision); return true;
@@ -42,6 +44,39 @@ public final class CauldronPersistenceOrder {
     /** Startup runs before hydration; no live owner may be adopted from a retained fixture key. */
     public synchronized void restoreFixtures(UUID run, List<BreweryLocation> keys) { reserveFixtures(run, keys); }
     public synchronized boolean fixtureBlocked(BreweryLocation key) { return fixtureKeys.containsKey(key); }
+    public synchronized boolean nativeBlocked(BreweryLocation key) { return fixtureBlocked(key) || externalKeys.containsKey(key); }
+    /** Separate production ownership, fenced immediately before its durable acquisition. */
+    public synchronized boolean reserveExternal(dev.jsinco.brewery.api.persistence.ExternalCauldronLeaseRequest request) {
+        var key = request.location();
+        if (stopped || paused.contains(key.worldUuid())) throw new IllegalStateException("External cauldron world is unavailable");
+        var previous = externalKeys.get(key);
+        if (previous != null) {
+            if (!previous.equals(request)) throw new IllegalStateException("External coordinate belongs to another generation");
+            return false;
+        }
+        if (fixtureBlocked(key) || lanes.containsKey(key)) throw new IllegalStateException("External coordinate has a native owner or admitted work");
+        if (externalKeys.size() >= MAX_COORDINATES) throw new IllegalStateException("External coordinate capacity reached");
+        if (!coordinateRevisions.containsKey(key) && coordinateRevisions.size() >= dev.jsinco.brewery.database.sql.ExternalCauldronStorage.MAX_HISTORY)
+            throw new IllegalStateException("External coordinate history capacity reached");
+        if (externalKeys.values().stream().anyMatch(lease -> lease.leaseId().equals(request.leaseId())))
+            throw new IllegalStateException("External generation identity changed");
+        externalKeys.put(key, request);
+        coordinateRevisions.put(key, Math.incrementExact(coordinateRevisions.getOrDefault(key, 0L)));
+        revision = Math.incrementExact(revision); return true;
+    }
+    public synchronized boolean externalOwned(dev.jsinco.brewery.api.persistence.ExternalCauldronLeaseRequest request) {
+        return request.equals(externalKeys.get(request.location()));
+    }
+    public synchronized boolean externalAvailable(dev.jsinco.brewery.api.persistence.ExternalCauldronLeaseRequest request) {
+        return !stopped && !paused.contains(request.location().worldUuid()) && externalOwned(request);
+    }
+    public synchronized Optional<dev.jsinco.brewery.api.persistence.ExternalCauldronLeaseRequest> externalAt(BreweryLocation key) {
+        return Optional.ofNullable(externalKeys.get(key));
+    }
+    public synchronized void releaseExternal(dev.jsinco.brewery.api.persistence.ExternalCauldronLeaseRequest request) {
+        if (!externalOwned(request) || lanes.containsKey(request.location())) throw new IllegalStateException("External generation changed");
+        externalKeys.remove(request.location()); revision = Math.incrementExact(revision);
+    }
     public synchronized boolean fixtureOwned(UUID run, List<BreweryLocation> keys) { return keys.equals(fixtureRuns.get(run)); }
     public synchronized long revision() { return revision; }
     /** Caller must have exact CLOSED SQL evidence, or a confirmed precommit reservation refusal. */
@@ -91,6 +126,7 @@ public final class CauldronPersistenceOrder {
     public final class Owner {
         private final BreweryLocation position;
         private final long epoch;
+        private final long coordinateRevision;
         private final UUID birthUuid;
         private final Hydration hydration;
         private boolean revoked, terminal;
@@ -98,6 +134,7 @@ public final class CauldronPersistenceOrder {
         private CompletableFuture<Void> deletion;
         private Owner(BreweryLocation position, long epoch, UUID birthUuid, Hydration hydration) {
             this.position = position; this.epoch = epoch; this.birthUuid = Objects.requireNonNull(birthUuid);
+            this.coordinateRevision = coordinateRevisions.getOrDefault(position, 0L);
             this.hydration = hydration;
         }
         private CauldronPersistenceOrder order() { return CauldronPersistenceOrder.this; }
@@ -122,15 +159,16 @@ public final class CauldronPersistenceOrder {
 
     public synchronized Owner newOwner(BreweryLocation position) {
         Objects.requireNonNull(position);
-        if (stopped || fixtureBlocked(position)) throw new IllegalStateException("Cauldron persistence is stopping or quarantined");
+        if (stopped || nativeBlocked(position)) throw new IllegalStateException("Cauldron persistence is stopping or externally owned");
         epochs.putIfAbsent(position.worldUuid(), 0L);
         return new Owner(position, epoch(position.worldUuid()), UUID.randomUUID(), null);
     }
 
     private long epoch(UUID world) { return epochs.getOrDefault(world, 0L); }
     private boolean available(Owner owner) {
-        if (owner.order() != this || stopped || owner.revoked || owner.terminal || owner.failure != null || fixtureBlocked(owner.position)
-                || paused.contains(owner.position.worldUuid()) || owner.epoch != epoch(owner.position.worldUuid())) return false;
+        if (owner.order() != this || stopped || owner.revoked || owner.terminal || owner.failure != null || nativeBlocked(owner.position)
+                || paused.contains(owner.position.worldUuid()) || owner.epoch != epoch(owner.position.worldUuid())
+                || owner.coordinateRevision != coordinateRevisions.getOrDefault(owner.position, 0L)) return false;
         Lane lane = lanes.get(owner.position);
         if (owner.hydration != null && (lane == null || lane.owner != owner)) return false;
         return lane == null || lane.failure == null && lane.pending < MAX_PENDING_PER_COORDINATE
@@ -238,7 +276,7 @@ public final class CauldronPersistenceOrder {
         public Owner restoreOwner(BreweryLocation position, UUID birthUuid) {
             synchronized (CauldronPersistenceOrder.this) {
                 requireCurrent();
-                if (adopted || !world.equals(Objects.requireNonNull(position).worldUuid()) || fixtureBlocked(position))
+                if (adopted || !world.equals(Objects.requireNonNull(position).worldUuid()) || nativeBlocked(position))
                     throw new IllegalStateException("Cauldron birth is outside its unpublished hydration");
                 return new Owner(position, epoch, birthUuid, this);
             }

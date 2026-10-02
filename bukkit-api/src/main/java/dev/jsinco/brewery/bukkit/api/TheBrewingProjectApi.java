@@ -16,6 +16,35 @@ import java.util.concurrent.CompletableFuture;
 
 public interface TheBrewingProjectApi {
 
+    /** Completed Good/Excellent product; anonymous failed/unfinished/unproven seals return empty. */
+    default java.util.Optional<dev.jsinco.brewery.api.brew.VerifiedBrewConsumable>
+            inspectVerifiedConsumable(ItemStack item) {
+        return java.util.Optional.empty();
+    }
+
+    /** Primary-thread admission at a loaded, physically empty CAULDRON. No player value is consumed. */
+    default CompletableFuture<dev.jsinco.brewery.api.persistence.ExternalCauldronLease> acquireExternalCauldronLease(
+            dev.jsinco.brewery.api.persistence.ExternalCauldronLeaseRequest request) {
+        return CompletableFuture.failedFuture(new UnsupportedOperationException("External cauldron leases unavailable"));
+    }
+
+    /** Exact lookup/recovery; unknown generation is empty, malformed/conflicting evidence is exceptional. */
+    default CompletableFuture<java.util.Optional<dev.jsinco.brewery.api.persistence.ExternalCauldronLease>> inspectExternalCauldronLease(
+            dev.jsinco.brewery.api.persistence.ExternalCauldronLeaseRequest request) {
+        return CompletableFuture.failedFuture(new UnsupportedOperationException("External cauldron leases unavailable"));
+    }
+
+    /** Caller must have settled its contents before release. This never refunds or consumes those contents. */
+    default CompletableFuture<dev.jsinco.brewery.api.persistence.ExternalCauldronLease> releaseExternalCauldronLease(
+            dev.jsinco.brewery.api.persistence.ExternalCauldronLeaseRequest request) {
+        return CompletableFuture.failedFuture(new UnsupportedOperationException("External cauldron leases unavailable"));
+    }
+
+    /** Primary-thread, exact active generation and currently loaded physical cauldron. */
+    default boolean isExternalCauldronLeaseCurrent(dev.jsinco.brewery.api.persistence.ExternalCauldronLease lease) {
+        return false;
+    }
+
     /**
      * Reserve 1..20 empty coordinates and preissue durable births before native input is possible.
      * This increment quarantines ALL input at those keys; no fixture creation is authorized.
