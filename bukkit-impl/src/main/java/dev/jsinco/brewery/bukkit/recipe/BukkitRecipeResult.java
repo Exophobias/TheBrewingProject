@@ -137,6 +137,7 @@ public class BukkitRecipeResult implements RecipeResult<ItemStack> {
     }
 
     private void applyData(ItemStack itemStack) {
+        dev.jsinco.brewery.bukkit.brew.VerifiedConsumableService.invalidate(itemStack);
         BrewAdapterAccess.hideTooltips(itemStack);
         itemStack.setData(DataComponentTypes.CUSTOM_NAME, MessageUtil.miniMessage(name())
                 .decoration(TextDecoration.ITALIC, false)

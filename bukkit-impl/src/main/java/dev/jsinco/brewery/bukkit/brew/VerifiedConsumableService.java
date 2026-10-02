@@ -26,9 +26,11 @@ public final class VerifiedConsumableService {
         if (signingKey == null || signingKey.length != 32) throw new IllegalArgumentException("Signing identity must be 32 bytes");
         this.signingKey = signingKey.clone();
     }
+    /** Output templates and renderers without full completion evidence cannot retain an old proof. */
+    public static void invalidate(ItemStack item) { item.editPersistentDataContainer(pdc -> pdc.remove(PROOF)); }
     /** Always remove inherited proof. Poor, unfinished, overridden and mismatched renders receive none. */
     public void refresh(ItemStack item, Brew brew, Recipe<ItemStack> recipe, BrewScore score, boolean sealed) {
-        item.editPersistentDataContainer(pdc -> pdc.remove(PROOF));
+        invalidate(item);
         if (recipe == null || !score.completed() || !Double.isFinite(score.score()) || score.score() < .6 || score.score() > 1
                 || BrewQuality.quality(score.score()).orElse(null) != score.brewQuality()) return;
         var data = item.getPersistentDataContainer();
@@ -99,7 +101,7 @@ public final class VerifiedConsumableService {
     private record Decoded(VerifiedBrewConsumable descriptor, String material, String history) { }
     public static String recipeRevision(Recipe<?> recipe) {
         return hash(BreweryKey.parse(recipe.getRecipeName()) + "\n" + Double.toHexString(recipe.getBrewDifficulty()) + "\n"
-                + canonicalJson(JsonParser.parseString(BrewPersistenceSnapshot.captureNow(new BrewImpl(recipe.getSteps()))))));
+                + canonicalJson(JsonParser.parseString(BrewPersistenceSnapshot.captureNow(new BrewImpl(recipe.getSteps())))));
     }
     private static String historyRevision(Brew brew) { return hash(canonicalJson(JsonParser.parseString(BrewPersistenceSnapshot.captureNow(brew)))); }
     /** Sort object keys, retaining semantic step/array order, so round trips and map order do not alter identity. */

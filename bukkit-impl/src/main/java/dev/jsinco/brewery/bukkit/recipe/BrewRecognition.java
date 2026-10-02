@@ -85,6 +85,7 @@ public final class BrewRecognition {
             anonymize(item, quality == null ? "Ruined Brew" : "Poor Brew");
         }
         String name = known ? recipe.getRecipeResult(quality).name() : quality == null ? "Ruined Brew" : "Poor Brew";
+        dev.jsinco.brewery.bukkit.brew.VerifiedConsumableService.invalidate(item);
         item.editPersistentDataContainer(pdc -> BrewAdapterAccess.applyBrewTags(pdc, recipe, score, name));
         BrewAdapterAccess.hideTooltips(item);
         markCurrent(item);
@@ -99,6 +100,7 @@ public final class BrewRecognition {
         if (!BrewAdapterAccess.isBrew(original)
                 || original.getPersistentDataContainer().has(PRESENTATION_VERSION)) return Optional.empty();
         ItemStack item = original.clone();
+        dev.jsinco.brewery.bukkit.brew.VerifiedConsumableService.invalidate(item);
         String id = item.getPersistentDataContainer().get(BrewAdapterAccess.BREWERY_TAG, PersistentDataType.STRING);
         double score = item.getPersistentDataContainer().getOrDefault(BrewAdapterAccess.BREWERY_SCORE, PersistentDataType.DOUBLE, 0D);
         BrewQuality quality = BrewQuality.quality(score).orElse(null);

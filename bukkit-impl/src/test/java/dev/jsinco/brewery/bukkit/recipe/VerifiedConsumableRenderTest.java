@@ -90,4 +90,11 @@ class VerifiedConsumableRenderTest {
         item.editPersistentDataContainer(pdc -> pdc.set(key, PersistentDataType.BYTE_ARRAY, proof));
         assertTrue(plugin.inspectVerifiedConsumable(item).isEmpty());
     }
+    @Test void rendersWithoutFullCompletionEvidenceInvalidateInheritedProof() {
+        var item = match(1,true).toItem(new Brew.State.Seal("one bottle"));
+        assertTrue(plugin.inspectVerifiedConsumable(item).isPresent());
+        VerifiedConsumableService.invalidate(item);
+        assertTrue(plugin.inspectVerifiedConsumable(item).isEmpty());
+        assertTrue(plugin.inspectVerifiedConsumable(match(1,true).toItem(new Brew.State.Seal("one bottle"))).isPresent());
+    }
 }
