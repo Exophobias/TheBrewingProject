@@ -22,7 +22,8 @@ class VerifiedConsumableRenderTest {
     @BeforeEach void start() throws Exception {
         MockBukkit.mock(new TBPServerMock()); plugin = MockBukkit.load(TheBrewingProject.class);
         potionFactory = ComponentItemStackMock.installPotionFactory(); componentBridge = ItemComponentBridgeFixture.install();
-        var result = new BukkitRecipeResult.Builder().name("Smith's Oil").appendBrewInfoLore(false).build();
+        var result = new BukkitRecipeResult.Builder().name("Smith's Oil").lore(List.of())
+                .recipeEffects(new RecipeEffectsImpl.Builder().effects(List.of()).build()).appendBrewInfoLore(false).build();
         recipe = new RecipeImpl.Builder<ItemStack>("smiths_oil").steps(List.of(new DistillStepImpl(1)))
                 .recipeResults(QualityData.equalValued(result)).build();
         plugin.getRecipeRegistry().registerRecipe(recipe);
