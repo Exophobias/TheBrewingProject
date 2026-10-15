@@ -40,7 +40,7 @@ public class BreweryCommand {
                     TheBrewingProject.getInstance().getDrunkEventExecutor().doDrunkEvent(target.getUniqueId(), event);
                     return com.mojang.brigadier.Command.SINGLE_SUCCESS;
                 });
-        commands.registrar().register(Commands.literal("tbp")
+        commands.registrar().register(BreweryHelp.attach(Commands.literal("tbp"))
                 .then(CreateCommand.command()
                         .requires(commandSourceStack -> commandSourceStack.getSender().hasPermission("brewery.command.create")))
                 .then(InfoCommand.command("info", false)

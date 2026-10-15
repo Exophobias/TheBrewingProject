@@ -730,7 +730,7 @@ public class BukkitCauldron implements Cauldron {
 
     private void destroyDisplay() {
         if (waterColorer != null) {
-            waterColorer.remove();
+            runLocally(() -> waterColorer.remove());
         }
     }
 

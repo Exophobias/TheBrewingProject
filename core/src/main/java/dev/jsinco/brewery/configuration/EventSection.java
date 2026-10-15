@@ -268,6 +268,14 @@ public class EventSection extends FileClosedConfig {
         return this.blurredSpeech;
     }
 
+    public boolean stumbleInVehicles() {
+        return false; // New movement controls await versioned operator configuration.
+    }
+
+    public boolean stumbleWithElytra() {
+        return false; // Preserve the existing elytra behavior.
+    }
+
     public double kaboomVelocity() {
         return this.kaboomVelocity;
     }
