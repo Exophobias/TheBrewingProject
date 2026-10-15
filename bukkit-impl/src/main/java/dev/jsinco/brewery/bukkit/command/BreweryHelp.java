@@ -70,7 +70,11 @@ public final class BreweryHelp {
         sender.sendMessage(header.append(Component.text(" ----------", NamedTextColor.DARK_GRAY)));
         for (Entry entry : section.subList(offset, Math.min(section.size(), offset + 8))) {
             String form = entry.form();
-            if (entry.others() && sender.hasPermission("brewery.command.other")) form += " [for <player>]";
+            if (entry.others() && sender.hasPermission("brewery.command.other")) {
+                int split = form.indexOf(' ');
+                form = split < 0 ? form + " [for <player>]"
+                        : form.substring(0, split) + " [for <player>]" + form.substring(split);
+            }
             sender.sendMessage(Component.text("/tbp " + form, NamedTextColor.GREEN)
                     .append(Component.text(" - ", NamedTextColor.DARK_GRAY))
                     .append(Component.text(entry.description(), NamedTextColor.GRAY)));
