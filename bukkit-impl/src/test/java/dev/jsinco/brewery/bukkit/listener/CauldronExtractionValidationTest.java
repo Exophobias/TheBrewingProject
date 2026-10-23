@@ -492,6 +492,26 @@ class CauldronExtractionValidationTest {
         assertEquals(3, cauldron.getLevel(), "An event guard must not rewrite world data");
     }
 
+    @Test
+    void activeBrewRejectsNaturalAndOtherExternalRefillsWithoutBlockingOrdinaryWaterCauldrons() {
+        setLevel(1);
+        var handler = new BlockEventListener(null, null, plugin.getDatabase(), plugin.getBreweryRegistry());
+        for (var reason : List.of(CauldronLevelChangeEvent.ChangeReason.NATURAL_FILL,
+                CauldronLevelChangeEvent.ChangeReason.BOTTLE_EMPTY, CauldronLevelChangeEvent.ChangeReason.BUCKET_EMPTY)) {
+            var state = block.getState();
+            Levelled next = (Levelled) state.getBlockData(); next.setLevel(3); state.setBlockData(next);
+            var refill = new CauldronLevelChangeEvent(block, null, reason, state);
+            handler.guardReservedCauldronLevelChange(refill);
+            assertTrue(refill.isCancelled(), reason + " must not multiply a stored brew");
+            assertEquals(1, cauldron.getLevel());
+        }
+        Block ordinary = world.getBlockAt(9, 65, 9); ordinary.setType(Material.WATER_CAULDRON);
+        var refill = new CauldronLevelChangeEvent(ordinary, null, CauldronLevelChangeEvent.ChangeReason.NATURAL_FILL,
+                ordinary.getState());
+        handler.guardReservedCauldronLevelChange(refill);
+        assertFalse(refill.isCancelled());
+    }
+
     private void onSpawn(Consumer<ItemSpawnEvent> action) {
         server.getPluginManager().registerEvent(ItemSpawnEvent.class, new Listener() { }, EventPriority.NORMAL,
                 (ignored, event) -> action.accept((ItemSpawnEvent) event), plugin);

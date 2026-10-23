@@ -292,9 +292,16 @@ public class BlockEventListener implements Listener {
         BreweryLocation location = BukkitAdapter.toBreweryLocation(event.getBlock());
         if (breweryRegistry.getActiveSinglePositionStructure(location)
                 .filter(BukkitCauldron.class::isInstance).map(BukkitCauldron.class::cast)
-                .filter(BukkitCauldron::isExtractionPending).isPresent()) {
+                .filter(cauldron -> cauldron.isExtractionPending()
+                        || waterLevel(event.getNewState().getBlockData()) > cauldron.getLevel()).isPresent()) {
             event.setCancelled(true);
         }
+    }
+
+    // TBP pours change block data directly. A level-change event is an external refill and
+    // must never create additional servings from a brew already owned by TBP.
+    private static int waterLevel(org.bukkit.block.data.BlockData data) {
+        return data instanceof org.bukkit.block.data.Levelled levelled ? levelled.getLevel() : 0;
     }
 
     @EventHandler(ignoreCancelled = true, priority = EventPriority.MONITOR)

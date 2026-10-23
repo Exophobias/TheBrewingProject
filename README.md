@@ -48,6 +48,26 @@ exact cleanup in database schema5, retaining the birth identities introduced by 
 See [the migration and ownership contract](PATRIAM-CAULDRON-PERSISTENCE.md) before deploying
 or attempting a downgrade. Native cooking remains unavailable for reserved fixture lanes.
 
+The Patriam `3.3.2-patriam.8` contract also rejects external level increases on active brew
+cauldrons, including rain and dripstone, so a refill cannot multiply an existing serving.
+`ItemIntegration.mergeBrewMetadata(existing, added, merged)` lets an enabled integration validate
+its own certificates when bottles are combined. Plain-water servings have an empty, metadata-free
+`added` brew. Implementations must preserve unrelated metadata; Alembic retains a certificate only
+when every source proves the same work and keeps the strictest source safe margin.
+
+`DistilleryExtractEvent` and `BarrelExtractEvent` expose read-only `getCompletionResult()` stages.
+An `InventoryExtractionReceipt` contains a detached output item and the original source brew when
+readable. Accepted proposals alone produce no receipt: TBP waits for deferred destination
+publication, or observed source/destination changes for automation. Refused sibling transactions,
+cancelled clicks and stale destinations settle without a receipt. This observes runtime handoff,
+not durable item delivery or authority to replay items; legacy event constructors have no receipt.
+
+After registering, consumers can verify the exact instance with
+`IntegrationManager.isRegistered(type, integration)`. Registration can be refused by the operator's
+integration blacklist or `isEnabled()`. Integrations must also gate their own callbacks after their
+owner stops. Build and publish the fork APIs with `VERSION=v3.3.2-patriam.8`; rebuild downstream
+consumers against that exact coordinate before release.
+
 **API**
 > [!IMPORTANT]
 > Classes outside the API package may change without notice!

@@ -106,6 +106,13 @@ public class IntegrationManagerImpl implements IntegrationManager {
      * @param tSupplier          Constructor for integration
      * @param <T>                The integration type
      */
+    @Override
+    public <T extends Integration> boolean isRegistered(IntegrationType<? extends T> type, T integration) {
+        return integrationRegistry.getAllIntegrations().stream()
+                .anyMatch(candidate -> candidate == integration)
+                && retrieve(type).stream().anyMatch(candidate -> candidate == integration);
+    }
+
     private <T extends Integration> void register(IntegrationType<? extends T> type, String classNamePredicate, Supplier<T> tSupplier) {
         if (!ClassUtil.exists(classNamePredicate)) {
             return;

@@ -8,4 +8,8 @@ public interface IntegrationManager {
      * @param <T>         An integration type
      */
     <T extends Integration> void register(IntegrationType<? extends T> type, T integration);
+    /** Whether this exact integration instance was registered under the requested contract. */
+    default <T extends Integration> boolean isRegistered(IntegrationType<? extends T> type, T integration) {
+        return false;
+    }
 }

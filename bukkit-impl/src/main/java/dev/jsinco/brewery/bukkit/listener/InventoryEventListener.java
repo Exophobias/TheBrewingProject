@@ -11,6 +11,7 @@ import dev.jsinco.brewery.bukkit.api.event.transaction.BarrelInsertEvent;
 import dev.jsinco.brewery.bukkit.api.event.transaction.DistilleryExtractEvent;
 import dev.jsinco.brewery.bukkit.api.event.transaction.DistilleryInsertEvent;
 import dev.jsinco.brewery.bukkit.api.event.transaction.ItemTransactionEvent;
+import dev.jsinco.brewery.bukkit.api.event.transaction.InventoryExtractionReceipt;
 import dev.jsinco.brewery.bukkit.api.transaction.ItemSource;
 import dev.jsinco.brewery.bukkit.api.transaction.ItemTransaction;
 import dev.jsinco.brewery.bukkit.api.transaction.ItemTransactionSession;
@@ -42,6 +43,9 @@ import org.jspecify.annotations.Nullable;
 import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
+import java.util.HashMap;
+import java.util.concurrent.CompletableFuture;
 import java.util.Optional;
 import java.util.Set;
 
@@ -91,13 +95,15 @@ public class InventoryEventListener implements Listener {
         if (!upperInventoryIsClicked && CLICKED_INVENTORY_ITEM_MOVE.contains(action)) {
             return;
         }
-        List<? extends ItemTransactionEvent<?>> transactions = compileTransactionsFromClick(event, upperInventoryIsClicked, inventoryAccessible);
+        var completions = new HashMap<ItemTransactionEvent<?>, CompletableFuture<Optional<InventoryExtractionReceipt>>>();
+        List<? extends ItemTransactionEvent<?>> transactions = compileTransactionsFromClick(event, upperInventoryIsClicked, inventoryAccessible, completions);
         if (transactions.isEmpty()) {
             return;
         }
         Optional<Runnable> deferredRelease = reserveDeferredPublication(inventoryAccessible);
         if (deferredRelease.isEmpty()) {
             event.setResult(Event.Result.DENY);
+            settleExtractions(completions);
             return;
         }
         Runnable release = deferredRelease.get();
@@ -110,61 +116,75 @@ public class InventoryEventListener implements Listener {
                         event.getWhoClicked().sendMessage(denyMessage);
                     }
                     event.setResult(Event.Result.DENY);
+                    settleExtractions(completions);
                     release.run();
                     return;
                 }
             }
-            for (ItemTransactionEvent<?> transactionEvent : transactions) {
-                if (transactionEvent instanceof DistilleryExtractEvent || transactionEvent instanceof BarrelExtractEvent) {
-                    ItemSource brewItemStack = transactionEvent.getTransactionSession().getResult();
-                    if (brewItemStack == null) {
-                        continue;
-                    }
-                    Optional.ofNullable(brewItemStack.get().getPersistentDataContainer().get(BrewAdapterAccess.BREWERY_SCORE, PersistentDataType.DOUBLE))
-                            .ifPresent(score -> Statistics.registerBrewMade(BrewQuality.quality(score).orElse(null)));
-                }
-            }
             scheduleDeferredPublication(
                     event.getWhoClicked(),
-                    () -> displayEventResult(event.getView(), transactions),
-                    release
+                    () -> {
+                        try {
+                            if (!event.isCancelled()) displayEventResult(event.getView(), transactions, completions);
+                        } catch (RuntimeException | Error failure) {
+                            completions.values().forEach(completion -> completion.completeExceptionally(failure));
+                            throw failure;
+                        } finally {
+                            settleExtractions(completions);
+                        }
+                    },
+                    () -> { settleExtractions(completions); release.run(); }
             );
         } catch (RuntimeException | Error failure) {
+            completions.values().forEach(completion -> completion.completeExceptionally(failure));
             release.run();
             throw failure;
         }
     }
 
-    private void displayEventResult(@NonNull InventoryView view, List<? extends ItemTransactionEvent<?>> transactions) {
+    private void displayEventResult(@NonNull InventoryView view, List<? extends ItemTransactionEvent<?>> transactions,
+                                    Map<ItemTransactionEvent<?>, CompletableFuture<Optional<InventoryExtractionReceipt>>> completions) {
         for (ItemTransactionEvent<?> transactionEvent : transactions) {
             ItemTransactionSession<?> session = transactionEvent.getTransactionSession();
             ItemTransaction transaction = session.getTransaction();
             ItemStack itemStack = session.getResult() == null ? null : session.getResult().get();
+            boolean published = false;
             if (transaction.to() instanceof ItemTransaction.Cursor
                     && transaction.itemStack().equals(view.getCursor())
             ) {
                 view.setCursor(itemStack);
+                published = true;
             }
             if (transaction.to() instanceof ItemTransaction.RawPosition(int pos)
                     && transaction.itemStack().equals(view.getItem(pos))
             ) {
                 view.setItem(pos, itemStack);
+                published = true;
             }
             if (transaction.to() instanceof ItemTransaction.UpperInventoryPosition(int pos)
                     && transaction.itemStack().equals(view.getTopInventory().getItem(pos))
             ) {
                 view.getTopInventory().setItem(pos, itemStack);
+                published = true;
             }
             if (transaction.to() instanceof ItemTransaction.LowerInventoryPosition(int pos)
                     && transaction.itemStack().equals(view.getBottomInventory().getItem(pos))
             ) {
                 view.getBottomInventory().setItem(pos, itemStack);
+                published = true;
+            }
+            if (published && itemStack != null && !itemStack.isEmpty() && completions.containsKey(transactionEvent)) {
+                var receipt = new InventoryExtractionReceipt(BrewAdapterAccess.fromItem(transaction.itemStack()), itemStack);
+                completions.get(transactionEvent).complete(Optional.of(receipt));
+                Optional.ofNullable(itemStack.getPersistentDataContainer().get(BrewAdapterAccess.BREWERY_SCORE, PersistentDataType.DOUBLE))
+                        .ifPresent(score -> Statistics.registerBrewMade(BrewQuality.quality(score).orElse(null)));
             }
         }
     }
 
     private List<? extends ItemTransactionEvent<?>> compileTransactionsFromClick(InventoryClickEvent event, boolean upperInventoryIsClicked,
-                                                                                 InventoryAccessible<ItemStack, Inventory> inventoryAccessible) {
+                                                                                 InventoryAccessible<ItemStack, Inventory> inventoryAccessible,
+                                                                                 Map<ItemTransactionEvent<?>, CompletableFuture<Optional<InventoryExtractionReceipt>>> completions) {
         Player player = event.getWhoClicked() instanceof Player temp ? temp : null;
         if (event.getAction() == InventoryAction.MOVE_TO_OTHER_INVENTORY) {
             if (upperInventoryIsClicked) {
@@ -172,6 +192,7 @@ public class InventoryEventListener implements Listener {
                         .stream()
                         .map(inventoryPosition -> eventFromStructure(
                                 inventoryAccessible,
+                                completions,
                                 new ItemTransaction.RawPosition(event.getRawSlot()),
                                 inventoryPosition,
                                 event.getCurrentItem(),
@@ -184,6 +205,7 @@ public class InventoryEventListener implements Listener {
                         .stream()
                         .map(inventoryPosition -> eventFromStructure(
                                 inventoryAccessible,
+                                completions,
                                 new ItemTransaction.RawPosition(event.getRawSlot()),
                                 inventoryPosition,
                                 event.getCurrentItem(),
@@ -208,6 +230,7 @@ public class InventoryEventListener implements Listener {
             if (currentItem != null && !currentItem.isEmpty()) {
                 output.add(eventFromStructure(
                         inventoryAccessible,
+                        completions,
                         new ItemTransaction.RawPosition(event.getRawSlot()),
                         new ItemTransaction.LowerInventoryPosition(hotbar),
                         currentItem,
@@ -219,6 +242,7 @@ public class InventoryEventListener implements Listener {
             if (hotbarItem != null && !hotbarItem.isEmpty()) {
                 output.add(eventFromStructure(
                         inventoryAccessible,
+                        completions,
                         new ItemTransaction.LowerInventoryPosition(hotbar),
                         new ItemTransaction.RawPosition(event.getRawSlot()),
                         hotbarItem,
@@ -233,6 +257,7 @@ public class InventoryEventListener implements Listener {
                 return List.of(
                         eventFromStructure(
                                 inventoryAccessible,
+                                completions,
                                 new ItemTransaction.Cursor(),
                                 new ItemTransaction.RawPosition(event.getRawSlot()),
                                 event.getCursor(),
@@ -241,6 +266,7 @@ public class InventoryEventListener implements Listener {
                         ),
                         eventFromStructure(
                                 inventoryAccessible,
+                                completions,
                                 new ItemTransaction.RawPosition(event.getRawSlot()),
                                 new ItemTransaction.Cursor(),
                                 event.getCurrentItem(),
@@ -252,6 +278,7 @@ public class InventoryEventListener implements Listener {
             if (ITEM_PICKUP_CURSOR.contains(event.getAction())) {
                 return List.of(eventFromStructure(
                         inventoryAccessible,
+                        completions,
                         new ItemTransaction.RawPosition(event.getRawSlot()),
                         new ItemTransaction.Cursor(),
                         event.getCurrentItem(),
@@ -261,6 +288,7 @@ public class InventoryEventListener implements Listener {
             }
             return List.of(eventFromStructure(
                     inventoryAccessible,
+                    completions,
                     new ItemTransaction.Cursor(),
                     new ItemTransaction.RawPosition(event.getRawSlot()),
                     event.getCursor(),
@@ -307,6 +335,7 @@ public class InventoryEventListener implements Listener {
     }
 
     private static ItemTransactionEvent<?> eventFromStructure(InventoryAccessible<ItemStack, Inventory> inventoryAccessible,
+                                                              Map<ItemTransactionEvent<?>, CompletableFuture<Optional<InventoryExtractionReceipt>>> completions,
                                                               ItemTransaction.InventoryPosition from, ItemTransaction.InventoryPosition to,
                                                               ItemStack item, boolean insertion, @Nullable Player player) {
         ItemTransaction transaction = new ItemTransaction(from, to, item, insertion);
@@ -323,11 +352,13 @@ public class InventoryEventListener implements Listener {
                                     ? authoredStep.withBrewer(player.getUniqueId()) : step
                     ));
         }
+        var completion = new CompletableFuture<Optional<InventoryExtractionReceipt>>();
+        ItemTransactionEvent<?> event;
         if (inventoryAccessible instanceof BukkitDistillery distillery) {
             dev.jsinco.brewery.api.util.CancelState cancelState = brewOptional.isEmpty() ? new dev.jsinco.brewery.api.util.CancelState.Cancelled() :
                     player == null || player.hasPermission("brewery.distillery.access") ? new dev.jsinco.brewery.api.util.CancelState.Allowed() :
                     new dev.jsinco.brewery.api.util.CancelState.PermissionDenied(Component.translatable("tbp.distillery.access-denied"));
-            return insertion ? new DistilleryInsertEvent(
+            event = insertion ? new DistilleryInsertEvent(
                     distillery,
                     new ItemTransactionSession<>(transaction, brewOptional
                                                               .map(brew -> new ItemSource.BrewBasedSource(brew, new Brew.State.Brewing()))
@@ -343,14 +374,16 @@ public class InventoryEventListener implements Listener {
                                                               .orElse(null)
                     ),
                     cancelState,
-                    player
+                    player, completion
             );
+            if (!insertion) completions.put(event, completion);
+            return event;
         }
         if (inventoryAccessible instanceof BukkitBarrel barrel) {
             dev.jsinco.brewery.api.util.CancelState cancelState = brewOptional.isEmpty() ? new dev.jsinco.brewery.api.util.CancelState.Cancelled() :
                     player == null || player.hasPermission("brewery.barrel.access") ? new dev.jsinco.brewery.api.util.CancelState.Allowed() :
                     new dev.jsinco.brewery.api.util.CancelState.PermissionDenied(Component.translatable("tbp.barrel.access-denied"));
-            return insertion ? new BarrelInsertEvent(
+            event = insertion ? new BarrelInsertEvent(
                     barrel,
                     new ItemTransactionSession<>(transaction, brewOptional
                                                               .map(brew -> new ItemSource.BrewBasedSource(brew, new Brew.State.Brewing()))
@@ -365,8 +398,10 @@ public class InventoryEventListener implements Listener {
                                                               .map(ItemSource.ItemBasedSource::new)
                                                               .orElse(null)),
                     cancelState,
-                    player
+                    player, completion
             );
+            if (!insertion) completions.put(event, completion);
+            return event;
         }
         throw new IllegalStateException("Unknown structure: " + inventoryAccessible);
     }
@@ -382,12 +417,14 @@ public class InventoryEventListener implements Listener {
             return;
         }
         InventoryView inventoryView = dragEvent.getView();
+        var completions = new HashMap<ItemTransactionEvent<?>, CompletableFuture<Optional<InventoryExtractionReceipt>>>();
         List<? extends ItemTransactionEvent<?>> transactionEvents = dragEvent.getNewItems()
                 .entrySet()
                 .stream()
                 .filter(entry -> dragEvent.getInventory() == inventoryView.getInventory(entry.getKey()))
                 .map(entry -> eventFromStructure(
                         inventoryAccessible,
+                        completions,
                         new ItemTransaction.Cursor(),
                         new ItemTransaction.RawPosition(entry.getKey()),
                         entry.getValue(),
@@ -421,7 +458,7 @@ public class InventoryEventListener implements Listener {
 
             scheduleDeferredPublication(
                     dragEvent.getWhoClicked(),
-                    () -> displayEventResult(inventoryView, transactionEvents),
+                    () -> displayEventResult(inventoryView, transactionEvents, completions),
                     release
             );
         } catch (RuntimeException | Error failure) {
@@ -448,8 +485,10 @@ public class InventoryEventListener implements Listener {
             return;
         }
         InventoryAccessible<ItemStack, Inventory> inventoryAccessible = both.get();
+        var completions = new HashMap<ItemTransactionEvent<?>, CompletableFuture<Optional<InventoryExtractionReceipt>>>();
         ItemTransactionEvent<?> transactionEvent = eventFromStructure(
                 inventoryAccessible,
+                completions,
                 new ItemTransaction.FirstInventoryPosition(source.isPresent()),
                 new ItemTransaction.FirstInventoryPosition(destination.isPresent()),
                 event.getItem(),
@@ -457,15 +496,43 @@ public class InventoryEventListener implements Listener {
                 null
         );
         if (!transactionEvent.callEvent()) {
+            settleExtractions(completions);
             event.setCancelled(true);
             return;
         }
         ItemSource result = transactionEvent.getTransactionSession().getResult();
         if (result == null) {
+            settleExtractions(completions);
             event.setCancelled(true);
             return;
         }
-        event.setItem(result.get());
+        ItemStack output = result.get();
+        ItemStack input = event.getItem().clone();
+        int sourceBefore = countSimilar(event.getSource(), input);
+        int destinationBefore = countSimilar(event.getDestination(), output);
+        event.setItem(output);
+        if (completions.isEmpty()) return;
+        var location = event.getDestination().getLocation();
+        if (location == null) { settleExtractions(completions); return; }
+        try {
+            TheBrewingProject.getInstance().getServer().getRegionScheduler().run(
+                    TheBrewingProject.getInstance(), location, ignored -> {
+                        try {
+                            if (!event.isCancelled()
+                                    && countSimilar(event.getSource(), input) <= sourceBefore - input.getAmount()
+                                    && countSimilar(event.getDestination(), output) >= destinationBefore + output.getAmount()) {
+                                completions.get(transactionEvent).complete(Optional.of(new InventoryExtractionReceipt(
+                                        BrewAdapterAccess.fromItem(input), output)));
+                            }
+                        } catch (RuntimeException | Error failure) {
+                            completions.values().forEach(completion -> completion.completeExceptionally(failure));
+                            throw failure;
+                        } finally { settleExtractions(completions); }
+                    });
+        } catch (RuntimeException | Error failure) {
+            completions.values().forEach(completion -> completion.completeExceptionally(failure));
+            throw failure;
+        }
     }
 
     @EventHandler(ignoreCancelled = true)
@@ -478,6 +545,18 @@ public class InventoryEventListener implements Listener {
         if (event.getItem().getPersistentDataContainer().has(PukeNamedExecutable.PUKE_ITEM)) {
             event.setCancelled(true);
         }
+    }
+
+    private static int countSimilar(Inventory inventory, ItemStack sample) {
+        int amount = 0;
+        for (ItemStack item : inventory.getContents()) {
+            if (item != null && item.isSimilar(sample)) amount += item.getAmount();
+        }
+        return amount;
+    }
+
+    private static void settleExtractions(Map<ItemTransactionEvent<?>, CompletableFuture<Optional<InventoryExtractionReceipt>>> completions) {
+        completions.values().forEach(completion -> completion.complete(Optional.empty()));
     }
 
     private static boolean atomicMovePending(InventoryAccessible<ItemStack, Inventory> inventoryAccessible) {
@@ -494,7 +573,7 @@ public class InventoryEventListener implements Listener {
 
     private static void scheduleDeferredPublication(
             org.bukkit.entity.HumanEntity viewer, Runnable publication, Runnable release) {
-        viewer.getScheduler().run(
+        var scheduled = viewer.getScheduler().run(
                 TheBrewingProject.getInstance(),
                 ignored -> {
                     try {
@@ -505,5 +584,6 @@ public class InventoryEventListener implements Listener {
                 },
                 release
         );
+        if (scheduled == null) release.run();
     }
 }

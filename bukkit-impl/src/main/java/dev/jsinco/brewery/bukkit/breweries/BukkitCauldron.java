@@ -1,6 +1,7 @@
 package dev.jsinco.brewery.bukkit.breweries;
 
 import dev.jsinco.brewery.api.brew.Brew;
+import dev.jsinco.brewery.bukkit.api.integration.IntegrationTypes;
 import dev.jsinco.brewery.api.brew.BrewingStep;
 import dev.jsinco.brewery.api.breweries.Cauldron;
 import dev.jsinco.brewery.api.breweries.CauldronType;
@@ -318,6 +319,7 @@ public class BukkitCauldron implements Cauldron {
             return handleBrewReaddition(addedItem, optionalAddedBrew.get(), player);
         }
 
+        int levelBefore = getLevel();
         incrementLevel(item);
         this.hot = isHeatSource(getBlock().getRelative(BlockFace.DOWN));
         Brew newBrew = withIngredient(BukkitIngredientManager.INSTANCE.getIngredient(addedItem))
@@ -325,6 +327,10 @@ public class BukkitCauldron implements Cauldron {
                         step instanceof BrewingStep.AuthoredStep<?> authoredStep
                                 ? authoredStep.withBrewer(player.getUniqueId()) : step
                 );
+        if (getLevel() > levelBefore) {
+            // A water potion adds an uncertified serving just like an uncertified brew pour.
+            newBrew = mergeMetadata(this.brew, new BrewImpl(List.of()), newBrew);
+        }
         if (!changeBrew(newBrew)) {
             return false;
         }
@@ -366,6 +372,13 @@ public class BukkitCauldron implements Cauldron {
         }
     }
 
+    private static Brew mergeMetadata(Brew existing, Brew added, Brew merged) {
+        for (var integration : TheBrewingProject.getInstance().getIntegrationManager().retrieve(IntegrationTypes.ITEM)) {
+            if (integration.isEnabled()) merged = integration.mergeBrewMetadata(existing, added, merged);
+        }
+        return merged;
+    }
+
     private boolean handleBrewReaddition(ItemStack item, Brew addedBrew, Player player) {
         if (getLevel() == 0 && changeBrew(addedBrew.withStep(newStep()))) {
             // Empty cauldron: reinsert brew into the cauldron with 1 water level
@@ -378,14 +391,15 @@ public class BukkitCauldron implements Cauldron {
         List<BrewingStep> existing = new ArrayList<>(this.brew.getCompletedSteps());
         Optional<Brew> merged;
         if (existing.isEmpty()) {
-            merged = Optional.of(addedBrew.withStep(newStep()));
+            merged = Optional.of(mergeMetadata(this.brew, addedBrew, addedBrew.withStep(newStep())));
         } else {
             BrewingStep thisStep = existing.removeLast();
             List<BrewingStep> added = new ArrayList<>(addedBrew.getCompletedSteps());
             merged = BrewUtil.mergeSteps(existing, added)
                     .map(steps -> Stream.concat(steps.stream(), Stream.of(thisStep)))
                     .map(Stream::toList)
-                    .map(this.brew::withStepsReplaced);
+                    .map(this.brew::withStepsReplaced)
+                    .map(mergedBrew -> mergeMetadata(this.brew, addedBrew, mergedBrew));
         }
         if (merged.isPresent() && changeBrew(merged.get())) {
             if (getCauldronType() == CauldronType.BREW) incrementLevel(item);
@@ -400,6 +414,7 @@ public class BukkitCauldron implements Cauldron {
                         step instanceof BrewingStep.AuthoredStep<?> authoredStep
                                 ? authoredStep.withBrewer(player.getUniqueId()) : step
                 );
+        newBrew = mergeMetadata(this.brew, addedBrew, newBrew);
         if (!changeBrew(newBrew)) {
             return false;
         }

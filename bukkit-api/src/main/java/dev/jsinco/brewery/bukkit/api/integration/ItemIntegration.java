@@ -114,4 +114,11 @@ public interface ItemIntegration extends Integration {
         return Optional.ofNullable(getItemId(itemStack))
                 .map(id -> new PluginIngredient(new BreweryKey(getId(), id), this));
     }
+
+    /** Applies integration-owned metadata policy after TBP combines two brew histories.
+     * An added plain-water serving is represented by an empty, metadata-free brew.
+     * Implementations must preserve unrelated metadata and return a new immutable brew. */
+    default @NonNull Brew mergeBrewMetadata(@NonNull Brew existing, @NonNull Brew added, @NonNull Brew merged) {
+        return merged;
+    }
 }
