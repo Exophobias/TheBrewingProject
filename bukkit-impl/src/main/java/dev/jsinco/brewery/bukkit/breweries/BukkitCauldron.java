@@ -319,22 +319,25 @@ public class BukkitCauldron implements Cauldron {
             return handleBrewReaddition(addedItem, optionalAddedBrew.get(), player);
         }
 
-        int levelBefore = getLevel();
-        incrementLevel(item);
+        BlockData levelData = getBlock().getBlockData();
+        int nextLevel = levelData instanceof Levelled levelled
+                ? Math.min(levelled.getLevel() + 1, levelled.getMaximumLevel()) : 1;
+        boolean addsServing = !brewExtracted && item.getType() == Material.POTION && nextLevel > getLevel();
         this.hot = isHeatSource(getBlock().getRelative(BlockFace.DOWN));
         Brew newBrew = withIngredient(BukkitIngredientManager.INSTANCE.getIngredient(addedItem))
                 .witModifiedLastStep(step ->
                         step instanceof BrewingStep.AuthoredStep<?> authoredStep
                                 ? authoredStep.withBrewer(player.getUniqueId()) : step
                 );
-        if (getLevel() > levelBefore) {
+        if (addsServing) {
             // A water potion adds an uncertified serving just like an uncertified brew pour.
             newBrew = mergeMetadata(this.brew, new BrewImpl(List.of()), newBrew);
         }
         if (!changeBrew(newBrew)) {
             return false;
         }
-        playIngredientAddedEffects(addedItem, player);
+        incrementLevel(item);
+        acceptedIngredientFeedback(() -> playIngredientAddedEffects(addedItem, player));
         return true;
     }
 
@@ -368,7 +371,17 @@ public class BukkitCauldron implements Cauldron {
     private void incrementLevel(ItemStack itemStack) {
         if (!brewExtracted && itemStack.getType() == Material.POTION) {
             BukkitCauldron.incrementLevel(getBlock());
-            updateLevel(getBlock().getBlockData());
+            acceptedIngredientFeedback(() -> updateLevel(getBlock().getBlockData()));
+        }
+    }
+
+    /** Feedback cannot undo an accepted serving or prevent its caller consuming the input. */
+    private void acceptedIngredientFeedback(Runnable feedback) {
+        try {
+            feedback.run();
+        } catch (RuntimeException | LinkageError failure) {
+            TheBrewingProject.getInstance().getLogger().log(java.util.logging.Level.WARNING,
+                    "Cauldron serving accepted, but its feedback failed at " + location, failure);
         }
     }
 
@@ -384,8 +397,8 @@ public class BukkitCauldron implements Cauldron {
             // Empty cauldron: reinsert brew into the cauldron with 1 water level
             incrementLevel(item);
             recalculateBrewTime();
-            recalculateColor();
-            playIngredientAddedEffects(item, player);
+            acceptedIngredientFeedback(this::recalculateColor);
+            acceptedIngredientFeedback(() -> playIngredientAddedEffects(item, player));
             return true;
         }
         List<BrewingStep> existing = new ArrayList<>(this.brew.getCompletedSteps());
@@ -403,7 +416,7 @@ public class BukkitCauldron implements Cauldron {
         }
         if (merged.isPresent() && changeBrew(merged.get())) {
             if (getCauldronType() == CauldronType.BREW) incrementLevel(item);
-            playIngredientAddedEffects(item, player);
+            acceptedIngredientFeedback(() -> playIngredientAddedEffects(item, player));
             return true;
         }
         if (!BrewAdapterAccess.isBrew(item)) {
@@ -419,7 +432,7 @@ public class BukkitCauldron implements Cauldron {
             return false;
         }
         if (getCauldronType() == CauldronType.BREW) incrementLevel(item);
-        playIngredientAddedEffects(item, player);
+        acceptedIngredientFeedback(() -> playIngredientAddedEffects(item, player));
         return true;
     }
 
