@@ -46,7 +46,7 @@ public class RecipeConditionsReader {
                     );
                     case INGREDIENTS ->
                             parseIngredientsCondition(configurationSection.getStringList(key), ingredientManager);
-                    case BARREL_TYPE -> throw new UnsupportedOperationException("Unsupported score type: " + key);
+                    case BARREL_TYPE -> throw new IllegalArgumentException("Unsupported score type: " + key);
                 });
             }
             recipeConditionFutures.add(
@@ -72,23 +72,17 @@ public class RecipeConditionsReader {
     private static CompletableFuture<ScoreCondition> parseIngredientsCondition(List<String> stringList, IngredientManager<?> ingredientManager) {
         List<CompletableFuture<Pair<Optional<Ingredient>, ScoreCondition.AmountCondition>>> ingredientsFutures = new ArrayList<>();
         for (String string : stringList) {
-            if (!string.contains("/")) {
-                ingredientsFutures.add(ingredientManager.getIngredient(string)
-                        .thenApplyAsync(ingredient -> {
-                            if (ingredient.isEmpty()) {
-                                Logger.logErr("Unknown ingredient: " + string);
-                            }
-                            return new Pair<>(ingredient, ScoreCondition.AmountCondition.ANY);
-                        }));
-            }
-            String[] split = string.split("/", 2);
-            ScoreCondition.AmountCondition.valueOf(split[1].toUpperCase(Locale.ROOT));
-            ingredientsFutures.add(ingredientManager.getIngredient(split[0])
-                    .thenApplyAsync(ingredient -> {
+            int separator = string.lastIndexOf('/');
+            String ingredientName = separator < 0 ? string : string.substring(0, separator);
+            ScoreCondition.AmountCondition amount = separator < 0
+                    ? ScoreCondition.AmountCondition.ANY
+                    : ScoreCondition.AmountCondition.valueOf(string.substring(separator + 1).toUpperCase(Locale.ROOT));
+            ingredientsFutures.add(ingredientManager.getIngredient(ingredientName)
+                    .thenApply(ingredient -> {
                         if (ingredient.isEmpty()) {
-                            Logger.logErr("Unknown ingredient: " + string);
+                            Logger.logErr("Unknown ingredient: " + ingredientName);
                         }
-                        return new Pair<>(ingredient, ScoreCondition.AmountCondition.ANY);
+                        return new Pair<>(ingredient, amount);
                     }));
         }
         return FutureUtil.mergeFutures(ingredientsFutures)

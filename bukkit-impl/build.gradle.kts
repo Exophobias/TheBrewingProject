@@ -19,6 +19,9 @@ val supportedPaperVersions = listOf("1.21.8", "1.21.9", "1.21.10", "1.21.11", "2
 
 
 repositories {
+    // Reuse the exact cached compile-only API when the vendor retires an artifact URL.
+    // No other dependency may resolve from this local fallback.
+    mavenLocal { content { includeModule("dev.lone", "api-itemsadder") } }
     mavenCentral()
     maven("https://repo.faststats.dev/releases")
     maven("https://hub.spigotmc.org/nexus/content/repositories/snapshots/")

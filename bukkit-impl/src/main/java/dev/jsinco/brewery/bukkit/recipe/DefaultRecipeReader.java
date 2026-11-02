@@ -50,6 +50,9 @@ public class DefaultRecipeReader {
                                 recipesSection.getBoolean(recipeName + ".condition.for-ruined-brews", true)
                         )
                 ));
+            } catch (IllegalArgumentException e) {
+                Logger.logErr("Could not read default recipe: " + recipeName);
+                Logger.logErr(e.getMessage());
             } catch (Throwable e) {
                 Logger.logErr("Could not read default recipe: " + recipeName);
                 Logger.logErr(e);
